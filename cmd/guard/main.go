@@ -33,11 +33,11 @@ func main() {
 	state, _ := guard.ReadState(home)
 
 	// A zero state (no root, no threads) is the disclosed missing-state
-	// degrade: the literal line, exit 0 — never a panic, never nonzero.
-	if state.Root == "" && len(state.Threads) == 0 {
-		fmt.Println("NO THREAD STATE")
-		return
-	}
+	// degrade. Under --json it still emits the JSON document — its empty
+	// Root/Threads fields are the degrade indication — so a machine consumer
+	// piping `guard --json` never receives the bare literal. On the default
+	// and --quiet paths the bare literal remains the degrade text.
+	degraded := state.Root == "" && len(state.Threads) == 0
 
 	switch {
 	case *jsonOut:
@@ -48,6 +48,8 @@ func main() {
 		}
 		os.Stdout.Write(b)
 		fmt.Println()
+	case degraded:
+		fmt.Println("NO THREAD STATE")
 	case *quiet:
 		line, code := guard.RenderQuiet(guard.OpenCount(state))
 		fmt.Println(line)
