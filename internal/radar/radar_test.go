@@ -938,6 +938,44 @@ func TestBuildStageDecorationStaleBranchCommit(t *testing.T) {
 	}
 }
 
+// TestBuildStageDecorationDeepHistoryBranchCommit pins spec row 11(ii) with no
+// listing bound — audit r2 residual. The ONLY commit referencing the card id
+// is the OLDEST of seven non-merge Zane branch commits (six unrelated fillers
+// on top), i.e. 6 commits behind HEAD. The decoration evidence path still
+// truncates to the newest 5 (parseLanded survivor cap), so the deep-history
+// card-ref commit is dropped, idRefsCard misses, and StageDesign/15 leaks
+// out. RED at 85a2977 by design; the builder lifts the cap to turn this green.
+func TestBuildStageDecorationDeepHistoryBranchCommit(t *testing.T) {
+	home := homeFixture(t, []cardSpec{
+		{id: "1461", title: "Wire the radar scan loop", status: "in-progress", priority: "high"},
+	}, deltaFixture)
+	repo := filepath.Join(home, "Repositories", "kanban-zed")
+	runGit(t, home, repo, "checkout", "-b", "feature/scan-loop")
+	base := time.Now().Add(-10 * 24 * time.Hour).UTC()
+	for i := 0; i < 7; i++ {
+		msg := fmt.Sprintf("chore: unrelated filler commit %d", i+1)
+		if i == 0 {
+			// Oldest of the seven: the ONLY commit referencing the card id.
+			msg = "wip(1461): scan loop on branch"
+		}
+		when := base.Add(time.Duration(i) * time.Hour).Format(time.RFC3339)
+		cmd := exec.Command("git", "commit", "--allow-empty", "-m", msg)
+		cmd.Dir = repo
+		cmd.Env = append(gitEnv(home), "GIT_AUTHOR_DATE="+when, "GIT_COMMITTER_DATE="+when)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("branch commit %d: %v: %s", i+1, err, out)
+		}
+	}
+	runGit(t, home, repo, "checkout", "main")
+	snap, err := Build(home)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if snap.InFlight == nil || snap.InFlight.Stage != StageBuild || snap.InFlight.ProgressPct != 50 {
+		t.Errorf("deep-history branch evidence (card-ref commit 6 back) must yield StageBuild/50 per spec 11(ii), got %+v", snap.InFlight)
+	}
+}
+
 func TestBuildDirtyAnchorAndReEntryCmd(t *testing.T) {
 	home := homeFixture(t, []cardSpec{
 		{id: "1461", title: "Wire the radar scan loop", status: "in-progress", priority: "high"},
