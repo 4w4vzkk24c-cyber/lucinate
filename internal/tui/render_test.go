@@ -576,20 +576,6 @@ func TestBuildSeparator(t *testing.T) {
 	}
 }
 
-func TestLastTimestampMs(t *testing.T) {
-	msgs := []chatMessage{
-		{role: "user", timestampMs: 100},
-		{role: "assistant", timestampMs: 200},
-		{role: "user"},
-	}
-	if got := lastTimestampMs(msgs); got != 200 {
-		t.Errorf("lastTimestampMs() = %d, want 200", got)
-	}
-	if got := lastTimestampMs(nil); got != 0 {
-		t.Errorf("lastTimestampMs(nil) = %d, want 0", got)
-	}
-}
-
 // While the turn is in flight the strip lists each tool; a running one
 // animates on the shared spinner frame and shows its argument summary.
 func TestRenderToolActivity_ExpandedRunning(t *testing.T) {

@@ -20,7 +20,7 @@ type chatMessage struct {
 	confirmPrompt bool // system-row holding a y/n confirmation question; removed once the user answers
 	errMsg        string
 	rendered      bool  // true if content has been glamour-rendered (contains ANSI codes)
-	timestampMs   int64 // unix millis; only used by "separator" rows to label resume time
+	timestampMs   int64 // unix millis; imports and live sends carry it; "separator" rows (crons view) label run times
 
 	// gen is the chatModel.gen counter at the moment this row was
 	// appended. It partitions the message list into a "history-side"

@@ -729,12 +729,13 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 				errMsg: fmt.Sprintf("Could not load conversation history: %v", msg.err),
 			})
 		case len(msg.messages) > 0:
-			lastTs := lastTimestampMs(msg.messages)
 			// Server-imported rows keep gen=0 (the chatMessage zero
 			// value) so any subsequent refresh treats them as
-			// history-side and replaces them cleanly.
-			hist := append(msg.messages, chatMessage{role: "separator", timestampMs: lastTs})
-			m.messages = append(hist, m.messages...)
+			// history-side and replaces them cleanly. Rows import
+			// their own timestampMs; the timestamp divider above the
+			// input reads the last message time directly — no
+			// resume-point separator row needed.
+			m.messages = append(msg.messages, m.messages...)
 			m.recordCanonical(msg.messages)
 		}
 		m.updateViewport()
@@ -1226,9 +1227,9 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 					sent = expanded
 				}
 			}
-			m.appendMessage(chatMessage{role: "user", content: text})
+			m.appendMessage(chatMessage{role: "user", content: text, timestampMs: time.Now().UnixMilli()})
 			m.resetToolActivity()
-			m.appendMessage(chatMessage{role: "assistant", streaming: true, awaitingDelta: true})
+			m.appendMessage(chatMessage{role: "assistant", streaming: true, awaitingDelta: true, timestampMs: time.Now().UnixMilli()})
 			m.sending = true
 			if ar := m.activeRoutine; ar != nil && ar.logger != nil {
 				ar.logger.WriteUser(text)
@@ -1416,13 +1417,13 @@ func (m chatModel) renderTimestampDivider() string {
 	ts := m.lastActivityTime().Format("3:04 PM")
 	label := "  " + ts + "  "
 	labelWidth := lipgloss.Width(label)
-	lineTotal := m.width - labelWidth
+	lineTotal := m.width - labelWidth - 4 // 2-col inset each side, aligns with message body
 	if lineTotal < 4 {
 		lineTotal = 4
 	}
 	half := lineTotal / 2
 	line := strings.Repeat("─", half) + label + strings.Repeat("─", lineTotal-half)
-	return lipgloss.NewStyle().Foreground(accent).Render(line)
+	return lipgloss.NewStyle().Foreground(accent).PaddingLeft(2).Render(line)
 }
 
 // renderAttachments renders the staged-attachment chips and, while
@@ -1578,9 +1579,9 @@ func (m *chatModel) drainQueueOpt(refresh bool) tea.Cmd {
 			sent = expanded
 		}
 	}
-	m.appendMessage(chatMessage{role: "user", content: text})
+	m.appendMessage(chatMessage{role: "user", content: text, timestampMs: time.Now().UnixMilli()})
 	m.resetToolActivity()
-	m.appendMessage(chatMessage{role: "assistant", streaming: true, awaitingDelta: true})
+	m.appendMessage(chatMessage{role: "assistant", streaming: true, awaitingDelta: true, timestampMs: time.Now().UnixMilli()})
 	if ar := m.activeRoutine; ar != nil && ar.logger != nil {
 		ar.logger.WriteUser(text)
 	}

@@ -373,17 +373,6 @@ func stripLeadingSpacesPerLine(s string) string {
 	return strings.Join(lines, "\n")
 }
 
-// lastTimestampMs returns the timestamp of the last message in msgs that
-// carries one, or 0 if none do. Used to label the resume-point separator.
-func lastTimestampMs(msgs []chatMessage) int64 {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].timestampMs > 0 {
-			return msgs[i].timestampMs
-		}
-	}
-	return 0
-}
-
 // formatSeparatorLabel renders a timestamp suffix for the history separator.
 // Returns "" when the timestamp is missing so older backends fall back to a
 // plain rule.
