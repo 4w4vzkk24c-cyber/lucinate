@@ -40,8 +40,8 @@ func TestSessionDelegate_ActivityIndicatorRender(t *testing.T) {
 		activeRun *bool
 		wantMark  string
 	}{
-		{"active run true", &trueVal, "✦"},
-		{"active run nil unknown", nil, "✧"},
+		{"active run true", &trueVal, "♛"},
+		{"active run nil unknown", nil, "♕"},
 		{"active run false idle", &falseVal, "  "},
 	}
 
@@ -67,7 +67,7 @@ func TestSessionDelegate_ActivityIndicatorRender(t *testing.T) {
 func TestSessionDelegate_SubagentIconRender(t *testing.T) {
 	trueVal := true
 
-	t.Run("subagent active uses arrow", func(t *testing.T) {
+	t.Run("subagent active uses pawn", func(t *testing.T) {
 		item := sessionItem{
 				key:          "agent:main:subagent:a68db7ea-0589-4052-a8d7-704cb6b04350",
 				title:        "Subagent Task",
@@ -78,15 +78,15 @@ func TestSessionDelegate_SubagentIconRender(t *testing.T) {
 		l := list.New(nil, d, 100, 20)
 		d.Render(&buf, l, 0, item)
 		out := buf.String()
-		if !strings.Contains(out, "▸") {
-			t.Errorf("Subagent active render missing arrow ▸; output:\n%s", out)
+		if !strings.Contains(out, "♟") {
+			t.Errorf("Subagent active render missing pawn ♟; output:\n%s", out)
 		}
-		if strings.Contains(out, "✦") {
-			t.Errorf("Subagent active render should NOT contain star ✦; output:\n%s", out)
+		if strings.Contains(out, "♛") {
+			t.Errorf("Subagent active render should NOT contain king ♛; output:\n%s", out)
 		}
 	})
 
-	t.Run("subagent unknown uses outline arrow", func(t *testing.T) {
+	t.Run("subagent unknown uses outline pawn", func(t *testing.T) {
 		item := sessionItem{
 				key:          "agent:main:subagent:a68db7ea-0589-4052-a8d7-704cb6b04350",
 				title:        "Subagent Task",
@@ -97,12 +97,12 @@ func TestSessionDelegate_SubagentIconRender(t *testing.T) {
 		l := list.New(nil, d, 100, 20)
 		d.Render(&buf, l, 0, item)
 		out := buf.String()
-		if !strings.Contains(out, "▹") {
-			t.Errorf("Subagent unknown render missing outline arrow ▹; output:\n%s", out)
+		if !strings.Contains(out, "♙") {
+			t.Errorf("Subagent unknown render missing outline pawn ♙; output:\n%s", out)
 		}
 	})
 
-	t.Run("real agent active uses star not arrow", func(t *testing.T) {
+	t.Run("real agent active uses king not pawn", func(t *testing.T) {
 		item := sessionItem{
 				key:          "agent:main:dashboard:ec828e06-b92d-4fbf-8be7-608f664a8f20",
 				title:        "Real Session",
@@ -113,11 +113,11 @@ func TestSessionDelegate_SubagentIconRender(t *testing.T) {
 		l := list.New(nil, d, 100, 20)
 		d.Render(&buf, l, 0, item)
 		out := buf.String()
-		if !strings.Contains(out, "✦") {
-			t.Errorf("Real agent active render missing star ✦; output:\n%s", out)
+		if !strings.Contains(out, "♛") {
+			t.Errorf("Real agent active render missing king ♛; output:\n%s", out)
 		}
-		if strings.Contains(out, "▸") {
-			t.Errorf("Real agent active render should NOT contain arrow ▸; output:\n%s", out)
+		if strings.Contains(out, "♟") {
+			t.Errorf("Real agent active render should NOT contain pawn ♟; output:\n%s", out)
 		}
 	})
 }

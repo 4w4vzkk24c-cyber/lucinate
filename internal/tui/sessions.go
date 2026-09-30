@@ -83,23 +83,23 @@ func (d sessionDelegate) Render(w io.Writer, m list.Model, index int, item list.
 		// Activity indicator:
 		// ● (accent/amber) if active, ○ (subtle) if unknown/omitted (*bool == nil), or space if idle (false)
 		// Activity indicator with session-type differentiation:
-		// Real agent sessions (stars):   ✦ active, ✧ dormant
-		// Subagent sessions (arrows):   ▸ active, ▹ standby
+		// Real agent sessions (kings):   ♛ active, ♕ dormant
+		// Subagent sessions (pawns):   ♟ active, ♙ standby
 		isSub := strings.Contains(i.key, ":subagent:")
 		indicator := "  "
 		if i.hasActiveRun != nil {
 			if *i.hasActiveRun {
 				if isSub {
-					indicator = lipgloss.NewStyle().Foreground(subtle).Bold(true).Render("▸ ")
+					indicator = lipgloss.NewStyle().Foreground(subtle).Bold(true).Render("♟ ")
 				} else {
-					indicator = lipgloss.NewStyle().Foreground(accent).Bold(true).Render("✦ ")
+					indicator = lipgloss.NewStyle().Foreground(accent).Bold(true).Render("♛ ")
 				}
 			}
 		} else {
 			if isSub {
-					indicator = lipgloss.NewStyle().Foreground(subtle).Render("▹ ")
+					indicator = lipgloss.NewStyle().Foreground(subtle).Render("♙ ")
 			} else {
-					indicator = lipgloss.NewStyle().Foreground(subtle).Render("✧ ")
+					indicator = lipgloss.NewStyle().Foreground(subtle).Render("♕ ")
 			}
 		}
 
@@ -217,7 +217,7 @@ func cleanDerivedTitle(title string) string {
 	title = strings.TrimPrefix(title, "```json")
 	title = strings.TrimPrefix(title, "```")
 	title = strings.TrimSpace(title)
-	// Strip JSON-like content at the start (e.g. '{ "label": "cli",...').
+	// Strip JSON-like content at the kingt (e.g. '{ "label": "cli",...').
 	if strings.HasPrefix(title, "{") {
 		title = ""
 	}
