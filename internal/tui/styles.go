@@ -12,11 +12,11 @@ var (
 	// Colours — using dark theme values.
 	// Solarized Dark palette
 	subtle      = lipgloss.Color("#586e75") // Base01 — comments, secondary
-	accent      = lipgloss.Color("#2aa198") // Cyan — interactive, selection
-	userClr     = lipgloss.Color("#268bd2") // Blue — user messages
+	accent      = lipgloss.Color("#268bd2") // Blue — interactive, selection
+	userClr     = lipgloss.Color("#859900") // Green — user messages
 	errClr      = lipgloss.Color("#dc322f") // Red — errors
 	execClr     = lipgloss.Color("#cb4b16") // Orange — remote exec
-	localExcClr = lipgloss.Color("#859900") // Green — local exec
+	localExcClr = lipgloss.Color("#dc322f") // Red — local exec (shares Red; prefix+border distinguish)
 
 	// Header bar.
 	headerStyle = lipgloss.NewStyle().
@@ -188,11 +188,11 @@ var darkPalette = chatPalette{
 // colours for contrast on light terminals.
 var lightPalette = chatPalette{
 	subtle:      lipgloss.Color("#93a1a1"), // Solarized Base1
-	accent:      lipgloss.Color("#2aa198"), // Solarized Cyan
-	userClr:     lipgloss.Color("#268bd2"), // Solarized Blue
+	accent:      lipgloss.Color("#268bd2"), // Solarized Blue
+	userClr:     lipgloss.Color("#859900"), // Solarized Green
 	errClr:      lipgloss.Color("#dc322f"), // Solarized Red
 	execClr:     lipgloss.Color("#cb4b16"), // Solarized Orange
-	localExcClr: lipgloss.Color("#859900"), // Solarized Green
+	localExcClr: lipgloss.Color("#dc322f"), // Solarized Red (shares Red; prefix+border distinguish)
 }
 
 var (
