@@ -8,9 +8,13 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/lucinate-ai/lucinate/internal/backend"
+	"github.com/lucinate-ai/lucinate/internal/client"
 	"github.com/lucinate-ai/lucinate/internal/config"
+
+	"github.com/a3tai/openclaw-go/protocol"
 )
 
 type viewState int
@@ -202,6 +206,18 @@ type AppModel struct {
 	initialAgent   string
 	initialSession string
 	initialMessage string
+
+	// sidebarFocus reports whether keystrokes in viewChat route to the
+	// sessions sidebar (ctrl+s toggles) instead of the chat composer.
+	// Only meaningful at widths >= sidebarMinCols, where the sidebar
+	// renders beside the chat; at narrow widths the modal path owns
+	// sessions navigation and this stays false.
+	sidebarFocus bool
+
+	// sidebarRefresh sequences the trailing-debounced sidebar re-lists
+	// driven by sessions.changed events. Pointer so value-copied models
+	// and in-flight commands share one sequence. Initialized in NewApp.
+	sidebarRefresh *sidebarDebouncer
 }
 
 // NewApp creates the root application model.
@@ -233,6 +249,7 @@ func NewApp(b backend.Backend, opts AppOptions) AppModel {
 		initialAgent:          opts.InitialAgent,
 		initialSession:        opts.InitialSession,
 		initialMessage:        opts.InitialMessage,
+		sidebarRefresh:        &sidebarDebouncer{},
 	}
 
 	switch {
@@ -582,7 +599,11 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 		case viewSelect:
 			m.selectModel.setSize(msg.Width, msg.Height)
 		case viewChat:
-			m.chatModel.setSize(msg.Width, msg.Height)
+			// Wide terminals split the window: the sessions sidebar
+			// takes clamp(24, 30% of cols, 40) beside the chat view.
+			// Narrow terminals keep the pre-W1 behavior — chat gets
+			// the full window and sessions stay a full-screen modal.
+			m.applyChatLayout()
 		case viewSessions:
 			m.sessionsModel.setSize(msg.Width, msg.Height)
 		case viewConfig:
@@ -687,6 +708,42 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 
 	case ConnStateMsg:
 		m.chatModel.applyConnState(msg)
+		// Re-issue sessions.subscribe on every connected transition:
+		// gateway subscriptions end on disconnect, so the sidebar's
+		// live updates would silently stop after a reconnect without
+		// this (W1-AC5).
+		if msg.Status == client.StatusConnected {
+			m.subscribeSessions()
+		}
+		return m, nil
+
+	case GatewayEventMsg:
+		// sessions.changed fans into the trailing-debounced sidebar
+		// refresh (events.go); every event still flows to the chat
+		// view exactly as before.
+		var forward tea.Cmd
+		if m.state == viewChat {
+			m.chatModel, forward = m.chatModel.Update(msg)
+		} else if m.state == viewSessions {
+			m.sessionsModel, forward = m.sessionsModel.Update(msg)
+		}
+		if protocol.Event(msg).EventName == "sessions.changed" {
+			if refresh := m.scheduleSidebarRefresh(); refresh != nil {
+				forward = tea.Batch(forward, refresh)
+			}
+		}
+		return m, forward
+
+	case sessionsLoadedMsg:
+		// A sessions list landed (modal Init, or the sidebar's debounced
+		// refresh) — route it to the sessions model in both shapes.
+		// Guarded so a zero-value sidebar (never constructed) is left
+		// alone.
+		if m.sessionsModel.backend != nil {
+			var cmd tea.Cmd
+			m.sessionsModel, cmd = m.sessionsModel.Update(msg)
+			return m, cmd
+		}
 		return m, nil
 
 	case tea.FocusMsg:
@@ -854,8 +911,9 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 		}
 		_, _ = m.chatModel.stopRecording()
 		m.chatModel = newChatModel(m.backend, msg.sessionKey, agentID, msg.agentName, msg.modelID, m.prefs, m.hideInput, connectionLabel(m.activeConn), "", m.brightCursor)
-		m.chatModel.setSize(m.width, m.height)
 		m.state = viewChat
+		m.sidebarFocus = false
+		m.applyChatLayout()
 		return m, m.chatModel.Init()
 
 	case cronTranscriptMsg:
@@ -892,12 +950,13 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 		}
 		_, _ = m.chatModel.stopRecording()
 		m.chatModel = newChatModel(m.backend, msg.sessionKey, m.sessionsModel.agentID, msg.agentName, msg.modelID, m.prefs, m.hideInput, connectionLabel(m.activeConn), "", m.brightCursor)
-		m.chatModel.setSize(m.width, m.height)
 		m.state = viewChat
+		m.applyChatLayout()
 		return m, m.chatModel.Init()
 
 	case goBackFromSessionsMsg:
 		m.state = viewChat
+		m.applyChatLayout()
 		return m, nil
 
 	case sessionCreatedMsg:
@@ -928,8 +987,8 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 		m.selectModel.selectingName = ""
 		_, _ = m.chatModel.stopRecording()
 		m.chatModel = newChatModel(m.backend, msg.sessionKey, msg.agentID, msg.agentName, msg.modelID, m.prefs, m.hideInput, connectionLabel(m.activeConn), initialMsg, m.brightCursor)
-		m.chatModel.setSize(m.width, m.height)
 		m.state = viewChat
+		m.applyChatLayout()
 		return m, m.chatModel.Init()
 
 	case TriggerActionMsg:
@@ -944,6 +1003,19 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 			// the keypress so it can't tear down the TUI loop behind a
 			// still-mounted host view.
 			return m, m.requestExit()
+		case "ctrl+s":
+			// Sidebar focus toggle — only bound where a sidebar exists
+			// (viewChat on a wide terminal). Interception keeps ctrl+s
+			// out of the composer in both directions. Handing focus back
+			// to the chat also normalises the sidebar cursor so a later
+			// refocus starts from the top instead of a stale position.
+			if m.state == viewChat && m.width >= sidebarMinCols {
+				m.sidebarFocus = !m.sidebarFocus
+				if !m.sidebarFocus {
+					m.resetSidebarCursor()
+				}
+				return m, nil
+			}
 		case "q":
 			// q quits on navigation screens, mirroring the CLI's bubbles
 			// list binding — but only on a host that delegates exit to us
@@ -1049,6 +1121,19 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 		return m, cmd
 
 	case viewChat:
+		// Sidebar-focused keystrokes route to the sessions list alone —
+		// the composer must never see them and the list must never see
+		// composer typing (W1-AC2). esc hands focus back to the chat.
+		if m.sidebarFocus && m.width >= sidebarMinCols {
+			if kp, ok := msg.(tea.KeyPressMsg); ok && kp.String() == "esc" {
+				m.sidebarFocus = false
+				m.resetSidebarCursor()
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.sessionsModel, cmd = m.sessionsModel.Update(msg)
+			return m, cmd
+		}
 		var cmd tea.Cmd
 		m.chatModel, cmd = m.chatModel.Update(msg)
 		return m, cmd
@@ -1085,6 +1170,30 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// resetSidebarCursor normalises the sessions list cursor after focus
+// leaves the sidebar, so a later refocus starts from the top rather than
+// acting on a stale position.
+func (m *AppModel) resetSidebarCursor() {
+	if len(m.sessionsModel.list.Items()) > 0 {
+		m.sessionsModel.list.Select(0)
+	}
+}
+
+// applyChatLayout sizes the chat view (and, on wide terminals, the
+// sessions sidebar beside it) from the current window dimensions. Called
+// on every WindowSizeMsg in viewChat and on every transition back into
+// viewChat, so returning from the full-screen sessions modal restores the
+// split without waiting for the next resize event.
+func (m *AppModel) applyChatLayout() {
+	if m.width >= sidebarMinCols {
+		w := clampSidebarWidth(m.width)
+		m.sessionsModel.setSize(w, m.height)
+		m.chatModel.setSize(m.width-w, m.height)
+		return
+	}
+	m.chatModel.setSize(m.width, m.height)
 }
 
 // connectTimeoutFromPrefs returns the per-attempt deadline for the
@@ -1269,7 +1378,17 @@ func (m AppModel) View() tea.View {
 	case viewSelect:
 		v = tea.NewView(m.selectModel.View())
 	case viewChat:
-		v = tea.NewView(m.chatModel.View())
+		if m.width >= sidebarMinCols {
+			// Wide terminal: sessions sidebar beside the chat view
+			// (W1-AC1). Both panes render concurrently; the sidebar is
+			// the existing sessionsModel list, clamped narrow.
+			v = tea.NewView(lipgloss.JoinHorizontal(lipgloss.Top,
+				m.sessionsModel.View(), m.chatModel.View()))
+		} else {
+			// Narrow fallback: the pre-W1 chat-only render, byte for
+			// byte (W1-AC6).
+			v = tea.NewView(m.chatModel.View())
+		}
 	case viewSessions:
 		v = tea.NewView(m.sessionsModel.View())
 	case viewConfig:

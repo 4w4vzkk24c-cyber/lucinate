@@ -1,17 +1,123 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/a3tai/openclaw-go/protocol"
 
 	"github.com/lucinate-ai/lucinate/internal/backend"
 )
+
+// --- Sessions sidebar (W1) -----------------------------------------------
+//
+// Live sidebar updates are event-driven (ban B4: no timer polling of
+// sessions.list). Gateway sessions.changed events fan into a 500 ms
+// trailing-debounced re-list: each event takes the next sequence number
+// and schedules one delayed refresh; when the refresh fires it re-checks
+// its sequence and a superseded refresh (a newer event arrived inside the
+// window) stands down. The refresh command performs the re-list itself
+// after the delay, so the last event of a burst always produces exactly
+// one trailing list refresh once the gap goes quiet.
+
+// sidebarMinCols is the terminal width at (and above) which the sessions
+// sidebar renders beside the chat view. Below it the pre-W1 full-screen
+// modal path is retained as the narrow fallback.
+const sidebarMinCols = 100
+
+// clampSidebarWidth returns the sidebar pane width for a given terminal
+// width: 30% of the columns, clamped to [24, 40].
+func clampSidebarWidth(cols int) int {
+	w := cols * 3 / 10
+	if w < 24 {
+		w = 24
+	}
+	if w > 40 {
+		w = 40
+	}
+	return w
+}
+
+// sidebarRefreshDelay is the trailing-debounce window for sidebar
+// refreshes driven by sessions.changed events.
+const sidebarRefreshDelay = 500 * time.Millisecond
+
+// sidebarDebouncer sequences sessions.changed events so that only the
+// refresh scheduled by the most recent event survives. Held by pointer on
+// AppModel so the value-copied model and the scheduled commands observe
+// the same sequence.
+type sidebarDebouncer struct {
+	mu  sync.Mutex
+	seq int
+}
+
+func (d *sidebarDebouncer) next() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.seq++
+	return d.seq
+}
+
+func (d *sidebarDebouncer) isCurrent(seq int) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.seq == seq
+}
+
+// scheduleSidebarRefresh returns the trailing-debounced sidebar re-list
+// command for one sessions.changed event. The command waits out the
+// debounce window, stands down when a newer event superseded it, then
+// re-lists and returns sessionsLoadedMsg for the sidebar (viewSessions
+// consumes the same message through its own dispatch).
+func (m AppModel) scheduleSidebarRefresh() tea.Cmd {
+	b := m.backend
+	if b == nil || m.sidebarRefresh == nil {
+		return nil
+	}
+	d := m.sidebarRefresh
+	agentID := m.sessionsModel.agentID
+	seq := d.next()
+	return func() tea.Msg {
+		time.Sleep(sidebarRefreshDelay)
+		if !d.isCurrent(seq) {
+			return nil // superseded by a newer event inside the window
+		}
+		raw, err := b.SessionsList(context.Background(), agentID)
+		if err != nil {
+			return sessionsLoadedMsg{err: err}
+		}
+		items, err := parseSessionsPayload(raw)
+		if err != nil {
+			return sessionsLoadedMsg{err: err}
+		}
+		return sessionsLoadedMsg{sessions: items}
+	}
+}
+
+// subscribeSessions re-issues sessions.subscribe on every connected
+// transition. Gateway subscriptions end on disconnect, so a reconnect
+// without a re-subscribe would silently stop the sidebar's live updates
+// (W1-AC5). Synchronous by design: the subscription is a cheap RPC and
+// ordering it before the sidebar renders again guarantees no gap.
+func (m *AppModel) subscribeSessions() {
+	if m.backend == nil {
+		return
+	}
+	sub, ok := m.backend.(backend.SessionsSubscriber)
+	if !ok {
+		return // transport without subscription semantics
+	}
+	if _, err := sub.SessionsSubscribe(context.Background()); err != nil {
+		slog.Debug("sessions subscribe failed", "err", err)
+	}
+}
 
 // chatContentBlock is the {type, text} shape of one entry in the
 // Content array of a chat history message. Defined here (rather than

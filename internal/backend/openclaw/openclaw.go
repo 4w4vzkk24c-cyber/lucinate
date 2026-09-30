@@ -57,6 +57,20 @@ func (b *Backend) Supervise(ctx context.Context, notify func(client.ConnState)) 
 	b.client.Supervise(ctx, notify)
 }
 
+// --- SessionsSubscriber ---
+
+// SessionsSubscribe subscribes this connection to global sessions.changed
+// events so the sessions sidebar refreshes live. The subscription is
+// connection-scoped: it dies with the transport, so every reconnect must
+// re-issue it (the TUI binds that to the Supervise connected-transition).
+func (b *Backend) SessionsSubscribe(ctx context.Context) (json.RawMessage, error) {
+	gw := b.client.GW()
+	if gw == nil {
+		return nil, client.ErrNotConnected
+	}
+	return gw.SessionsSubscribe(ctx)
+}
+
 func (b *Backend) ListAgents(ctx context.Context) (*protocol.AgentsListResult, error) {
 	return b.client.ListAgents(ctx)
 }

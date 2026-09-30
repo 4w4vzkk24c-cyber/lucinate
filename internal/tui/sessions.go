@@ -183,6 +183,46 @@ func sessionGroup(key string) string {
 	return "Conversations"
 }
 
+// parseSessionsPayload decodes a sessions.list RPC response into sorted
+// session items. Shared by the modal load path (loadSessions) and the
+// sidebar's debounced refresh so both produce identical items for
+// identical payloads.
+func parseSessionsPayload(raw []byte) ([]sessionItem, error) {
+	slog.Debug("sessions list", "raw", string(raw))
+	var resp sessionsListResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return nil, err
+	}
+	var items []sessionItem
+	for _, rawEntry := range resp.Sessions {
+		var entry sessionListEntry
+		if err := json.Unmarshal(rawEntry, &entry); err != nil {
+			slog.Debug("sessions list entry parse error", "err", err)
+			continue
+		}
+		title := cleanDerivedTitle(entry.DerivedTitle)
+		if len(title) > 80 {
+			title = title[:77] + "..."
+		}
+		items = append(items, sessionItem{
+			key:         entry.Key,
+			title:       title,
+			lastMessage: entry.LastMessagePreview,
+			updatedAt:   entry.UpdatedAt,
+			group:       sessionGroup(entry.Key),
+		})
+	}
+	// Sort by updatedAt descending within each group.
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].group != items[j].group {
+			// "Conversations" before "Scheduled"
+			return items[i].group < items[j].group
+		}
+		return items[i].updatedAt > items[j].updatedAt
+	})
+	return items, nil
+}
+
 func (m sessionsModel) loadSessions() tea.Cmd {
 	b := m.backend
 	agentID := m.agentID
@@ -191,38 +231,10 @@ func (m sessionsModel) loadSessions() tea.Cmd {
 		if err != nil {
 			return sessionsLoadedMsg{err: err}
 		}
-		slog.Debug("sessions list", "raw", string(raw))
-		var resp sessionsListResponse
-		if err := json.Unmarshal(raw, &resp); err != nil {
+		items, err := parseSessionsPayload(raw)
+		if err != nil {
 			return sessionsLoadedMsg{err: err}
 		}
-		var items []sessionItem
-		for _, rawEntry := range resp.Sessions {
-			var entry sessionListEntry
-			if err := json.Unmarshal(rawEntry, &entry); err != nil {
-				slog.Debug("sessions list entry parse error", "err", err)
-				continue
-			}
-			title := cleanDerivedTitle(entry.DerivedTitle)
-			if len(title) > 80 {
-				title = title[:77] + "..."
-			}
-			items = append(items, sessionItem{
-				key:         entry.Key,
-				title:       title,
-				lastMessage: entry.LastMessagePreview,
-				updatedAt:   entry.UpdatedAt,
-				group:       sessionGroup(entry.Key),
-			})
-		}
-		// Sort by updatedAt descending within each group.
-		sort.Slice(items, func(i, j int) bool {
-			if items[i].group != items[j].group {
-				// "Conversations" before "Scheduled"
-				return items[i].group < items[j].group
-			}
-			return items[i].updatedAt > items[j].updatedAt
-		})
 		return sessionsLoadedMsg{sessions: items}
 	}
 }

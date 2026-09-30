@@ -391,3 +391,13 @@ type CronBackend interface {
 	CronRemove(ctx context.Context, jobID string) error
 	CronRun(ctx context.Context, jobID string, force bool) error
 }
+
+// SessionsSubscriber exposes live session-list updates via the gateway's
+// sessions.subscribe RPC (global sessions.changed events). Backends whose
+// transport has no subscription semantics (HTTP-only) omit this; the TUI
+// type-asserts and silently does without live sidebar updates. The
+// subscription is connection-scoped — gateway subscriptions end on
+// disconnect — so callers must re-issue it on every connected transition.
+type SessionsSubscriber interface {
+	SessionsSubscribe(ctx context.Context) (json.RawMessage, error)
+}
