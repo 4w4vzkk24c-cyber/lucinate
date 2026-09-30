@@ -1,6 +1,9 @@
 package tui
 
 import (
+	"fmt"
+	"os"
+	"runtime/debug"
 	"context"
 	"errors"
 	"log/slog"
@@ -16,6 +19,17 @@ import (
 
 	"github.com/a3tai/openclaw-go/protocol"
 )
+
+
+// logPanic writes the panic value and stack trace to /tmp/lucinate_panic.log
+// so crashes are diagnosable even when the terminal state is destroyed.
+// Re-panics so Bubble Tea's own recovery still fires normally.
+func logPanic(where string, r any) {
+	stack := debug.Stack()
+	msg := fmt.Sprintf("PANIC in %s: %v\n\nTimestamp: %s\n\nStack:\n%s\n",
+		where, r, time.Now().Format("2006-01-02 15:04:05"), stack)
+	_ = os.WriteFile("/tmp/lucinate_panic.log", []byte(msg), 0644)
+}
 
 type viewState int
 
@@ -292,6 +306,12 @@ func (m AppModel) Init() tea.Cmd {
 }
 
 func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	defer func() {
+		if r := recover(); r != nil {
+			logPanic("Update", r)
+			panic(r)
+		}
+	}()
 	prevState := m.state
 	next, cmd := m.update(msg)
 	if next.state != prevState {
@@ -1478,6 +1498,12 @@ func (m AppModel) handleConnectResult(msg connectResultMsg) (AppModel, tea.Cmd) 
 }
 
 func (m AppModel) View() tea.View {
+	defer func() {
+		if r := recover(); r != nil {
+			logPanic("View", r)
+			panic(r)
+		}
+	}()
 	var v tea.View
 	switch m.state {
 	case viewConnections:
