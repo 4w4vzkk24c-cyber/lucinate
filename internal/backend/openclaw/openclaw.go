@@ -8,8 +8,12 @@ package openclaw
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"mime"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -100,7 +104,87 @@ func (b *Backend) ChatSend(ctx context.Context, sessionKey string, params backen
 	if catalog := b.takePendingCatalog(sessionKey, params.Skills); catalog != "" {
 		message = catalog + "\n" + message
 	}
-	return b.client.ChatSend(ctx, sessionKey, message, params.IdempotencyKey)
+	if len(params.Attachments) == 0 {
+		return b.client.ChatSend(ctx, sessionKey, message, params.IdempotencyKey)
+	}
+	attachments, err := b.buildAttachments(params.Attachments)
+	if err != nil {
+		return nil, err
+	}
+	gw := b.client.GW()
+	if gw == nil {
+		return nil, client.ErrNotConnected
+	}
+	return gw.ChatSend(ctx, protocol.ChatSendParams{
+		SessionKey:     sessionKey,
+		Message:        message,
+		IdempotencyKey: params.IdempotencyKey,
+		Attachments:    attachments,
+	})
+}
+
+// buildAttachments turns staged local paths into validated protocol
+// attachments: stat every file first (never stream-unread files), run
+// the gateway's 4-step pre-send check via the SDK against the live
+// hello policy (connection-time snapshot; a reconnect re-reads it),
+// and only then read + base64-encode. Every rejection is typed and
+// names the ceiling and the actual size — the server never sees an
+// oversize frame.
+func (b *Backend) buildAttachments(atts []backend.Attachment) ([]protocol.ChatAttachment, error) {
+	var policy *protocol.HelloPolicy
+	if b.client != nil {
+		if gw := b.client.GW(); gw != nil {
+			if hello := gw.Hello(); hello != nil {
+				p := hello.Policy
+				policy = &p
+			}
+		}
+	}
+	out := make([]protocol.ChatAttachment, 0, len(atts))
+	for _, att := range atts {
+		if strings.TrimSpace(att.Path) == "" {
+			return nil, fmt.Errorf("attachment: empty path")
+		}
+		// stat BEFORE reading (B9): the size drives validation.
+		fi, err := os.Stat(att.Path)
+		if err != nil {
+			return nil, fmt.Errorf("attachment %s: %w", att.Path, err)
+		}
+		name := att.FileName
+		if name == "" {
+			name = filepath.Base(att.Path)
+		}
+		// The MIME type is derived from the path, never taken from
+		// caller hints: image classification decides which ceiling
+		// applies, so it must come from the file itself.
+		mimeType := mime.TypeByExtension(strings.ToLower(filepath.Ext(att.Path)))
+		if mimeType == "" {
+			mimeType = "application/octet-stream"
+		}
+		elemType := "file"
+		if strings.HasPrefix(mimeType, "image/") {
+			elemType = "image"
+		}
+		out = append(out, protocol.ChatAttachment{
+			Type:      elemType,
+			MimeType:  mimeType,
+			FileName:  name,
+			SizeBytes: fi.Size(),
+		})
+	}
+	// 4-step pre-send check against the (possibly defaulted) policy
+	// before a single byte is read off disk.
+	if err := protocol.ValidateAttachments(out, policy); err != nil {
+		return nil, err
+	}
+	for i := range out {
+		data, err := os.ReadFile(atts[i].Path)
+		if err != nil {
+			return nil, fmt.Errorf("attachment %s: %w", atts[i].Path, err)
+		}
+		out[i].Content = base64.StdEncoding.EncodeToString(data)
+	}
+	return out, nil
 }
 
 // takePendingCatalog returns the System:-prefixed catalog block to

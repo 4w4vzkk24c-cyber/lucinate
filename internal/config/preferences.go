@@ -49,8 +49,8 @@ type Preferences struct {
 
 // Theme mode values for ThemePreferences.Mode.
 const (
-	ThemeModeAuto = "auto"
-	ThemeModeDark = "dark"
+	ThemeModeAuto  = "auto"
+	ThemeModeDark  = "dark"
 	ThemeModeLight = "light"
 )
 

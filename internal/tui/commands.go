@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/a3tai/openclaw-go/protocol"
 	tea "charm.land/bubbletea/v2"
+	"github.com/a3tai/openclaw-go/protocol"
 
 	"github.com/lucinate-ai/lucinate/internal/backend"
 	"github.com/lucinate-ai/lucinate/internal/config"
@@ -53,7 +53,7 @@ type pendingNavConfirm struct {
 // hint surfaces the picker first, "/model" before "/models" likewise.
 // Tab now extends to the longest common prefix and the completion menu
 // shows every candidate, so the curated order no longer rules Tab.
-var slashCommands = []string{"/agents", "/agent", "/cancel", "/clear", "/commands", "/compact", "/config", "/connections", "/crons", "/cron", "/exit", "/export", "/help", "/header", "/model", "/models", "/mouse", "/quit", "/record", "/reset", "/routines", "/routine", "/sessions", "/settings", "/skills", "/stats", "/status", "/think"}
+var slashCommands = []string{"/agents", "/agent", "/attach", "/cancel", "/clear", "/commands", "/compact", "/config", "/connections", "/crons", "/cron", "/exit", "/export", "/help", "/header", "/model", "/models", "/mouse", "/quit", "/record", "/reset", "/routines", "/routine", "/sessions", "/settings", "/skills", "/stats", "/status", "/think"}
 
 // thinkingLevels is the ordered list of valid thinking levels.
 var thinkingLevels = []string{"off", "minimal", "low", "medium", "high"}
@@ -65,6 +65,7 @@ var thinkingLevels = []string{"off", "minimal", "low", "medium", "high"}
 const helpBody = `/quit, /exit — quit lucinate
 /agents — return to agent picker
 /agent <name> — switch agent directly
+/attach <path> — stage a file to send with your next message (also: ctrl+a)
 /cancel — cancel the current response (also: Esc)
 /clear — clear chat display
 /compact — compact session context
@@ -396,6 +397,12 @@ func (m *chatModel) handleSlashCommand(text string) (handled bool, cmd tea.Cmd) 
 		return true, nil
 	}
 
+	// /attach stages a local file for the next send (W3, send-only).
+	// Bare /attach points at ctrl+a.
+	if command == "/attach" || strings.HasPrefix(command, "/attach ") {
+		return m.handleAttachCommand(text)
+	}
+
 	// /agent with optional name argument.
 	if command == "/agent" || strings.HasPrefix(command, "/agent ") {
 		return m.handleAgentCommand(text)
@@ -481,6 +488,25 @@ func (m *chatModel) handleSlashCommand(text string) (handled bool, cmd tea.Cmd) 
 	}
 
 	return false, nil
+}
+
+// handleAttachCommand handles `/attach <path>`; bare `/attach` points at
+// the ctrl+a prompt. Staging stats the file for immediate feedback; the
+// size ceilings are enforced at send time by the backend against the
+// gateway's live policy.
+func (m *chatModel) handleAttachCommand(text string) (bool, tea.Cmd) {
+	parts := strings.SplitN(strings.TrimSpace(text), " ", 2)
+	if len(parts) == 1 || strings.TrimSpace(parts[1]) == "" {
+		m.appendMessage(chatMessage{
+			role:    "system",
+			content: "usage: /attach <path> — or press ctrl+a to type a path",
+		})
+		m.updateViewport()
+		return true, nil
+	}
+	m.stageAttachment(strings.TrimSpace(parts[1]))
+	m.updateViewport()
+	return true, nil
 }
 
 // handleAgentCommand handles `/agent` and `/agent <name>`. With no argument

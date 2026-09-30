@@ -140,6 +140,23 @@ type ChatSendParams struct {
 	// about. Empty when no skills were discovered. Backends format
 	// it appropriately — see the Backend.ChatSend doc comment.
 	Skills []SkillCatalogEntry
+
+	// Attachments are staged files to send with this turn (W3,
+	// send-only). Backends validate against the gateway's pre-send
+	// ceilings before any wire write; validation failures return typed
+	// errors naming the limit and the actual size.
+	Attachments []Attachment
+}
+
+// Attachment is one staged local file for the send-only attachment
+// pipeline. Path is authoritative — the backend derives the wire
+// fields (file name, MIME, size) from it so nothing untrusted shapes
+// the payload. FileName and MimeType are presentation hints for
+// embedders.
+type Attachment struct {
+	Path     string
+	FileName string
+	MimeType string
 }
 
 // SkillCatalogEntry is one entry in the skill catalog presented to

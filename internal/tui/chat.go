@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -139,6 +141,14 @@ func (m *chatModel) applyConnState(next ConnStateMsg) {
 	}
 }
 
+// attachPromptState captures a file path for the ctrl+a attachment
+// prompt. Kept as a plain buffer with manual key handling: the prompt is
+// a one-line transient input, not a full widget, and routing it here
+// keeps composer keystrokes and prompt keystrokes strictly separated.
+type attachPromptState struct {
+	buf string
+}
+
 const inputHeight = 3
 
 // spinnerFrames cycles the streaming-response placeholder through a braille
@@ -161,9 +171,9 @@ type chatModel struct {
 	agentID            string
 	agentName          string
 	sending            bool
-	runID              string // active run ID for cancellation
+	runID              string          // active run ID for cancellation
 	finalisedRuns      finalisedRunSet // bounded LRU of run IDs we have already finalised; chat events still bearing one of these IDs are stale duplicates emitted by the gateway after final and must not corrupt the next run's placeholder
-	gen                uint64 // generation counter stamped onto every newly-appended chatMessage; bumped after each turn finalises so the just-finalised turn can be replaced by a server-canonical refresh while the next turn's live state survives the merge
+	gen                uint64          // generation counter stamped onto every newly-appended chatMessage; bumped after each turn finalises so the just-finalised turn can be replaced by a server-canonical refresh while the next turn's live state survives the merge
 	pendingMessages    []string
 	historyBrowseIndex int    // bash-style up-arrow recall position; -1 when not browsing, 0 = most recent user message, N = N user messages back
 	historyBrowseValue string // textarea contents last placed by history navigation; lets repeated up/down keep walking until the user edits
@@ -185,8 +195,10 @@ type chatModel struct {
 	prefs              config.Preferences
 	pendingConfirm     *pendingConfirmation
 	pendingNavConfirm  *pendingNavConfirm
-	notifications      []notification // ephemeral status rows rendered above the input; cleared when the user submits an input
-	palette           *chatPalette   // W2 theme palette resolved from prefs at construction; nil renders the dark defaults
+	notifications      []notification       // ephemeral status rows rendered above the input; cleared when the user submits an input
+	palette            *chatPalette         // W2 theme palette resolved from prefs at construction; nil renders the dark defaults
+	attachments        []backend.Attachment // W3 staged attachments, carried on the next send and rendered as chips above the input
+	attachPrompt       *attachPromptState   // non-nil while the ctrl+a path prompt is capturing a file path
 	historyLimit       int
 	historyLoading     bool   // true while the initial history fetch is in flight; gates the placeholder in updateViewport
 	thinkingLevel      string // current thinking level; "" means not set / using gateway default
@@ -503,21 +515,21 @@ func newChatModel(b backend.Backend, sessionKey, agentID, agentName, modelID str
 
 	pal := paletteForMode(prefs.ThemeSettings().Mode)
 	m := chatModel{
-		viewport:        vp,
-		textarea:        ta,
-		backend:         b,
-		connName:        connName,
-		sessionKey:      sessionKey,
-		agentID:         agentID,
-		agentName:       agentName,
-		renderer:        renderer,
-		modelID:         modelID,
-		prefs:           prefs,
-		palette:         &pal,
-		historyLimit:    prefs.HistoryLimit,
-		historyLoading:  true,
-		hideInput:       hideInput,
-		terminalFocused: true,
+		viewport:           vp,
+		textarea:           ta,
+		backend:            b,
+		connName:           connName,
+		sessionKey:         sessionKey,
+		agentID:            agentID,
+		agentName:          agentName,
+		renderer:           renderer,
+		modelID:            modelID,
+		prefs:              prefs,
+		palette:            &pal,
+		historyLimit:       prefs.HistoryLimit,
+		historyLoading:     true,
+		hideInput:          hideInput,
+		terminalFocused:    true,
 		pendingMessages:    pending,
 		historyBrowseIndex: -1,
 		// Start at gen=1 so the zero value on chatMessage.gen reads as
@@ -920,7 +932,46 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		slog.Debug("key", "code", msg.Code, "mod", msg.Mod, "string", msg.String())
+		// The ctrl+a attachment prompt is a modal micro-input: while
+		// open it owns every keystroke (enter stages, esc cancels,
+		// backspace trims, runes append) and nothing reaches the
+		// composer or the viewport.
+		if m.attachPrompt != nil {
+			switch msg.String() {
+			case "enter":
+				path := strings.TrimSpace(m.attachPrompt.buf)
+				m.attachPrompt = nil
+				if path != "" {
+					m.stageAttachment(path)
+				}
+				m.applyLayout()
+				m.updateViewport()
+				return m, nil
+			case "esc":
+				m.attachPrompt = nil
+				m.applyLayout()
+				m.updateViewport()
+				return m, nil
+			case "backspace":
+				if r := []rune(m.attachPrompt.buf); len(r) > 0 {
+					m.attachPrompt.buf = string(r[:len(r)-1])
+				}
+				return m, nil
+			default:
+				if msg.Text != "" {
+					m.attachPrompt.buf += msg.Text
+				}
+				return m, nil
+			}
+		}
 		switch msg.String() {
+		case "ctrl+a":
+			// Open the attachment path prompt (W3). The staged set and
+			// the prompt render as chips above the input; sends carry
+			// them through the validated attachment pipeline.
+			m.attachPrompt = &attachPromptState{}
+			m.applyLayout()
+			return m, nil
 		case "esc":
 			if m.pendingNavConfirm != nil {
 				m.pendingNavConfirm = nil
@@ -1319,17 +1370,54 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
+// stageAttachment records a local file for the next send. Existence is
+// checked now for immediate feedback; size/MIME validation happens at
+// send time against the gateway's live policy ceilings (the adapter
+// rejects with a typed error before any wire write).
+func (m *chatModel) stageAttachment(path string) {
+	if _, err := os.Stat(path); err != nil {
+		m.notifyError(fmt.Sprintf("attachment: %v", err))
+		return
+	}
+	m.attachments = append(m.attachments, backend.Attachment{Path: path})
+	m.notify(fmt.Sprintf("attached %s", filepath.Base(path)))
+}
+
+// renderAttachments renders the staged-attachment chips and, while
+// open, the ctrl+a path prompt — the strip above the input.
+func (m *chatModel) renderAttachments() string {
+	if len(m.attachments) == 0 && m.attachPrompt == nil {
+		return ""
+	}
+	var parts []string
+	for _, a := range m.attachments {
+		parts = append(parts, attachChipStyle.Render("📎 "+filepath.Base(a.Path)))
+	}
+	if m.attachPrompt != nil {
+		parts = append(parts, attachPromptStyle.Render("path: "+m.attachPrompt.buf+"▮"))
+	}
+	return strings.Join(parts, " ")
+}
+
 func (m *chatModel) sendMessage(text string) tea.Cmd {
 	sessionKey := m.sessionKey
 	b := m.backend
 	skills := m.catalogParams()
+	// Staged attachments ride the next send; take them now so a failed
+	// turn doesn't silently re-send them with the retry.
+	atts := m.attachments
+	m.attachments = nil
 	return func() tea.Msg {
 		idemKey := fmt.Sprintf("lucinate-%d", time.Now().UnixNano())
-		result, err := b.ChatSend(context.Background(), sessionKey, backend.ChatSendParams{
+		params := backend.ChatSendParams{
 			Message:        text,
 			IdempotencyKey: idemKey,
 			Skills:         skills,
-		})
+		}
+		if len(atts) > 0 {
+			params.Attachments = atts
+		}
+		result, err := b.ChatSend(context.Background(), sessionKey, params)
 		if err != nil {
 			return chatSentMsg{err: err}
 		}
@@ -1636,6 +1724,7 @@ func (m chatModel) View() string {
 	infoNotifications := m.renderInfoNotifications()
 	errorNotifications := m.renderErrorNotifications()
 	toolStrip := m.renderToolActivity()
+	attachments := m.renderAttachments()
 	pending := m.renderPendingMessages()
 	navConfirm := m.renderNavConfirm()
 
@@ -1662,6 +1751,9 @@ func (m chatModel) View() string {
 		}
 		if toolStrip != "" {
 			parts = append(parts, toolStrip)
+		}
+		if attachments != "" {
+			parts = append(parts, attachments)
 		}
 		if pending != "" {
 			parts = append(parts, pending)
@@ -1693,6 +1785,9 @@ func (m chatModel) View() string {
 	}
 	if toolStrip != "" {
 		parts = append(parts, toolStrip)
+	}
+	if attachments != "" {
+		parts = append(parts, attachments)
 	}
 	if pending != "" {
 		parts = append(parts, pending)

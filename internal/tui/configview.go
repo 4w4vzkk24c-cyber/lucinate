@@ -30,8 +30,8 @@ type configItem struct {
 	label   string
 	key     string
 	kind    configItemKind
-	checked bool   // for bool items
-	value   int    // for int items
+	checked bool // for bool items
+	value   int  // for int items
 	min     int
 	max     int
 	step    int

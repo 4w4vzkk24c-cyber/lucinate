@@ -58,4 +58,4 @@ require (
 // Use our openclaw-go fork until upstream ships gateway protocol v4 +
 // setup-code bootstrap support. Pin a tag, bump deliberately.
 // See docs/openclaw-go-fork.md for the maintenance/sync process.
-replace github.com/a3tai/openclaw-go => github.com/outofcoffee/openclaw-go v1.20260430.0-lucinate.2
+replace github.com/a3tai/openclaw-go => github.com/outofcoffee/openclaw-go v1.20260430.0-zane.1
