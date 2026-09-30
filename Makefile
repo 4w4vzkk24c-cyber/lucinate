@@ -5,6 +5,10 @@ LDFLAGS := -X github.com/lucinate-ai/lucinate/internal/version.Version=$(VERSION
 build:
 	go build -ldflags "$(LDFLAGS)" -o lucinate .
 
+.PHONY: build-radar
+build-radar:
+	go build -o radar ./cmd/radar/
+
 .PHONY: build-prod
 build-prod:
 	go build -ldflags "$(LDFLAGS) -s -w" -trimpath -o lucinate .
