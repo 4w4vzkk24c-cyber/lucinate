@@ -1064,9 +1064,11 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 				m.sessionsModel.rebuildList()
 				return m, nil
 			}
-		case "?":
+		case "ctrl+/":
 			// Hotkey help overlay — toggles a centered cheat-sheet on
 			// top of whatever view is active. Any key closes it.
+			// ctrl+/ is a control sequence (safe from the composer,
+			// unlike '?' which is printable).
 			m.showHelp = !m.showHelp
 			return m, nil
 		case "q":
@@ -1538,7 +1540,7 @@ func (m AppModel) renderHelpOverlay(underlying string) string {
 		{"ctrl+j / ctrl+k", "Next / previous session"},
 		{"ctrl+s", "Toggle sidebar focus"},
 		{"ctrl+h", "Hide/show subagents"},
-		{"?", "This help overlay"},
+		{"ctrl+/", "This help overlay"},
 		{"esc", "Back to chat (from sidebar)"},
 		{"enter", "Select highlighted session"},
 		{"n", "New session (sidebar focused)"},
