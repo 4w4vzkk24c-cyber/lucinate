@@ -22,13 +22,19 @@ func (m *chatModel) updateViewport() {
 	for i, msg := range m.messages {
 		if i > 0 {
 			b.WriteString("\n")
+			// Whitespace separator between sender changes — a blank line
+			// makes turn boundaries obvious at a glance without clutter.
+			prev := m.messages[i-1].role
+			if prev != msg.role && prev != "separator" && msg.role != "separator" {
+				b.WriteString("\n")
+			}
 		}
 		switch msg.role {
 		case "separator":
 			b.WriteString(statusStyle.Render(buildSeparator(contentWidth, formatSeparatorLabel(msg.timestampMs, time.Now()))))
 
 		case "user":
-			prefixIndent, wrapWidth := m.writePrefix(&b, userPrefixStyle, "You")
+			prefixIndent, wrapWidth := m.writePrefix(&b, userPrefixStyle, "🦚")
 			body := wordWrap(msg.content, wrapWidth)
 			b.WriteString(indentMultiline(body, prefixIndent))
 
@@ -146,7 +152,7 @@ func (m *chatModel) writePrefix(b *strings.Builder, style lipgloss.Style, name s
 // prefixWidth returns the shared width used for message prefixes so message
 // bodies start in the same column for both user and assistant rows.
 func (m *chatModel) prefixWidth() int {
-	w := len("You:")
+	w := len("🦚:") // display width of the peacock emoji + colon
 	if aw := len(m.agentName + ":"); aw > w {
 		w = aw
 	}
@@ -459,7 +465,7 @@ func (m *chatModel) renderPendingMessages() string {
 		if i > 0 {
 			b.WriteString("\n")
 		}
-		prefixIndent, wrapWidth := m.writePrefix(&b, pendingPrefixStyle, "You")
+		prefixIndent, wrapWidth := m.writePrefix(&b, pendingPrefixStyle, "🦚")
 		body := wordWrap(text, wrapWidth)
 		b.WriteString(pendingBodyStyle.Render(indentMultiline(body, prefixIndent)))
 	}
