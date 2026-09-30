@@ -37,23 +37,40 @@ import (
 
 // ---------------------------------------------------------------- scaffolding
 
-func repoRoot(t *testing.T) string {
-	t.Helper()
+// repoRootPath computes the repo root from this file's location without a
+// *testing.T, so non-test scaffolding (buildRadarBin) can use it too.
+func repoRootPath() (string, error) {
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
-		t.Fatal("runtime.Caller failed")
+		return "", errors.New("runtime.Caller failed")
 	}
 	// <root>/internal/radar/radar_test.go -> <root>
-	return filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", ".."))
+	return filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", "..")), nil
+}
+
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	root, err := repoRootPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root
 }
 
 var buildRadarBin = sync.OnceValues(func() (string, error) {
+	// D1: go test runs with CWD = package dir (internal/radar); build from the
+	// repo root so ./cmd/radar resolves.
+	root, err := repoRootPath()
+	if err != nil {
+		return "", err
+	}
 	dir, err := os.MkdirTemp("", "radar-bin-*")
 	if err != nil {
 		return "", err
 	}
 	bin := filepath.Join(dir, "radar")
 	cmd := exec.Command("go", "build", "-o", bin, "./cmd/radar")
+	cmd.Dir = root
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("go build ./cmd/radar: %v: %s", err, out)
 	}
@@ -356,8 +373,10 @@ func TestParseRoadmapUnavailableSentinel(t *testing.T) {
 	// Unreadable file (the errno class iCloud eviction surfaces as; EDEADLK is
 	// the same read-failure seam). Root can read anything, so only run this
 	// case unprivileged — never t.Skip, AC7 forbids skipped radar tests.
+	// D3: fresh HOME — case 2 turned home's Δ.md path into a directory, so
+	// writeDelta into it would EISDIR.
 	if os.Geteuid() != 0 {
-		p := writeDelta(t, home, deltaFixture)
+		p := writeDelta(t, t.TempDir(), deltaFixture)
 		if err := os.Chmod(p, 0o000); err != nil {
 			t.Fatal(err)
 		}
@@ -995,7 +1014,9 @@ func TestSuitePresenceAndNoSkips(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
+		// radar_test.go is the scanner: its own assertion literals ("t.Skip",
+		// "testing.Short") self-match. Scan every other .go in the package.
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || e.Name() == "radar_test.go" {
 			continue
 		}
 		src, err := os.ReadFile(filepath.Join(root, "internal", "radar", e.Name()))
@@ -1020,7 +1041,9 @@ func TestSuiteHermeticity(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
+		// radar_test.go is the scanner: its own "/Users/" assertion literal
+		// self-matches. Scan every other .go in the package.
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || e.Name() == "radar_test.go" {
 			continue
 		}
 		src, err := os.ReadFile(filepath.Join(root, "internal", "radar", e.Name()))
