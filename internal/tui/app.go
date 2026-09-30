@@ -913,6 +913,7 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 		m.chatModel = newChatModel(m.backend, msg.sessionKey, agentID, msg.agentName, msg.modelID, m.prefs, m.hideInput, connectionLabel(m.activeConn), "", m.brightCursor)
 		m.state = viewChat
 		m.sidebarFocus = false
+		m.syncSidebarCursor(msg.sessionKey)
 		// Reset the sidebar's selecting lock: it was set for the
 		// full-screen modal's loading transition, but the persistent
 		// sidebar must keep rendering the full session list beside
@@ -1043,6 +1044,16 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 				if prev, ok := m.cycleSession(-1); ok {
 					return m, func() tea.Msg { return prev }
 				}
+			}
+		case "ctrl+h":
+			// Toggle subagent visibility in the sidebar, directly from
+			// chat — mirrors the 'h' binding that works when the sidebar
+			// is focused (ctrl+s first). ctrl+h avoids intercepting the
+			// printable 'h' from the composer.
+			if m.state == viewChat && m.width >= sidebarMinCols {
+				m.sessionsModel.hideSubagents = !m.sessionsModel.hideSubagents
+				m.sessionsModel.rebuildList()
+				return m, nil
 			}
 		case "q":
 			// q quits on navigation screens, mirroring the CLI's bubbles
@@ -1206,6 +1217,18 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 func (m *AppModel) resetSidebarCursor() {
 	if len(m.sessionsModel.list.Items()) > 0 {
 		m.sessionsModel.list.Select(0)
+	}
+}
+
+// syncSidebarCursor moves the sidebar list selection to the session
+// matching the given key, so the highlight tracks ctrl+j/ctrl+k cycling
+// and sidebar-initiated switches alike.
+func (m *AppModel) syncSidebarCursor(sessionKey string) {
+	for i, it := range m.sessionsModel.list.Items() {
+		if s, ok := it.(sessionItem); ok && s.key == sessionKey {
+			m.sessionsModel.list.Select(i)
+			return
+		}
 	}
 }
 
