@@ -118,7 +118,7 @@ func TestRender_ChatView_UserAndAssistantPrefixes(t *testing.T) {
 	tm := teatest.NewTestModel(t, adapter, teatest.WithInitialTermSize(120, 40))
 	defer finishProgram(t, tm)
 
-	waitForContains(t, tm.Output(), "🦚", "main:", "hello there", "general kenobi")
+	waitForContains(t, tm.Output(), "🦚", "🍋", "hello there", "general kenobi")
 }
 
 func TestRender_ChatView_HeaderShowsAgentName(t *testing.T) {

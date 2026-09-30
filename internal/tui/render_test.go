@@ -200,7 +200,7 @@ func TestPrefixWidth_AlignedBetweenUserAndAgent(t *testing.T) {
 		wantWidth int
 	}{
 		{"ai", 4},
-		{"main", 6},
+		{"main", 4}, // displays as 🍋
 		{"claude", 8},
 		{"🦚", 4},
 		{"longagent", 11},
@@ -465,7 +465,7 @@ func TestUpdateViewport_IndentsWrappedContentAfterPrefix(t *testing.T) {
 	if !strings.Contains(view, "\n      ") {
 		t.Fatalf("expected wrapped user continuation to be indented, got %q", view)
 	}
-	if !strings.Contains(view, "main: line one") {
+	if !strings.Contains(view, "🍋: line one") {
 		t.Fatalf("expected first assistant line with prefix, got %q", view)
 	}
 	if !strings.Contains(view, "\n      line two") {
@@ -499,7 +499,7 @@ func TestUpdateViewport_NarrowLayoutStacksPrefixAboveBody(t *testing.T) {
 	if !strings.Contains(view, "🦚:\nalpha beta gamma") {
 		t.Fatalf("expected stacked user prefix above body, got %q", view)
 	}
-	if !strings.Contains(view, "main:\nline one\nline two") {
+	if !strings.Contains(view, "🍋:\nline one\nline two") {
 		t.Fatalf("expected stacked assistant prefix above body, got %q", view)
 	}
 }
@@ -807,8 +807,8 @@ func TestNarrowLayout_Threshold(t *testing.T) {
 	}{
 		{"wide_short_agent", "main", 100, false},
 		{"narrow_short_agent", "main", 30, true},
-		{"boundary_short_agent_narrow", "main", 69, true},
-		{"boundary_short_agent_wide", "main", 70, false},
+		{"boundary_short_agent_narrow", "main", 67, true},
+		{"boundary_short_agent_wide", "main", 68, false},
 		{"wide_long_agent", "longagentname", 100, false},
 		{"narrow_long_agent", "longagentname", 70, true},
 		{"zero_width", "main", 0, true},

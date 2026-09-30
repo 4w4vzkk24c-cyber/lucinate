@@ -39,7 +39,7 @@ func (m *chatModel) updateViewport() {
 			b.WriteString(indentMultiline(body, prefixIndent))
 
 		case "assistant":
-			prefixIndent, wrapWidth := m.writePrefix(&b, assistantPrefixStyle, m.agentName)
+			prefixIndent, wrapWidth := m.writePrefix(&b, assistantPrefixStyle, m.assistantLabel())
 			if msg.errMsg != "" {
 				body := wordWrap(msg.errMsg, wrapWidth)
 				b.WriteString(errorStyle.Render(indentMultiline(body, prefixIndent)))
@@ -154,17 +154,27 @@ func (m *chatModel) writePrefix(b *strings.Builder, style lipgloss.Style, name s
 const peacockDisplayWidth = 2
 
 // displayWidth returns the terminal column count of a string, accounting
-// for the 🦚 emoji (4 UTF-8 bytes, 2 display columns). ASCII-only strings
-// return their byte length unchanged.
+// for the 🦚 and 🍋 emoji (4 UTF-8 bytes, 2 display columns each).
+// ASCII-only strings return their byte length unchanged.
 func displayWidth(s string) int {
-	return len(s) - 2*strings.Count(s, "🦚")
+	return len(s) - 2*strings.Count(s, "🦚") - 2*strings.Count(s, "🍋")
+}
+
+// assistantLabel returns the speaker label for assistant messages: 🍋 for
+// the main agent, the agent name for every other agent (quorum-* etc.
+// keep their identity so multi-agent transcripts stay readable).
+func (m *chatModel) assistantLabel() string {
+	if m.agentName == "main" {
+		return "🍋"
+	}
+	return m.agentName
 }
 
 // prefixWidth returns the shared width used for message prefixes so message
 // bodies start in the same column for both user and assistant rows.
 func (m *chatModel) prefixWidth() int {
-	w := peacockDisplayWidth + 1 // display width of "🦚:"
-	if aw := displayWidth(m.agentName + ":"); aw > w {
+	w := peacockDisplayWidth + 1 // display width of "🦚:" and "🍋:"
+	if aw := displayWidth(m.assistantLabel() + ":"); aw > w {
 		w = aw
 	}
 	return w + 1
