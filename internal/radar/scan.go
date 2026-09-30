@@ -155,16 +155,19 @@ var kanbanRefRe = regexp.MustCompile(`\*kanban #([0-9]+)\*`)
 // unreadable file (including iCloud-evicted) returns an error wrapping
 // ErrRoadmapUnavailable.
 func ParseRoadmap(path string, maxLines int) ([]QueuedItem, error) {
-	rows, _, err := parseRoadmap(path, maxLines)
+	rows, _, _, err := parseRoadmap(path, maxLines)
 	return rows, err
 }
 
-// parseRoadmap is ParseRoadmap plus the do-now-presence flag Build needs to
-// keep rows[0] unambiguous (spec r3 F5 / r5 F8).
-func parseRoadmap(path string, maxLines int) (rows []QueuedItem, doNow bool, err error) {
+// parseRoadmap is ParseRoadmap plus the do-now-presence and do-now-seed flags
+// Build needs to keep rows[0] unambiguous (spec r3 F5 / r5 F8 / R2-4).
+// doNowSeeded is true iff rows[0] originated in a parsed Do-now section (a
+// non-empty doNowRows placed at rows[0]); a heading-present-empty or band-only
+// roadmap reports false, so a band row is never promoted to InFlight.
+func parseRoadmap(path string, maxLines int) (rows []QueuedItem, doNow bool, doNowSeeded bool, err error) {
 	data, readErr := os.ReadFile(path)
 	if readErr != nil {
-		return nil, false, fmt.Errorf("%w: %s", ErrRoadmapUnavailable, readErr)
+		return nil, false, false, fmt.Errorf("%w: %s", ErrRoadmapUnavailable, readErr)
 	}
 	lines := strings.Split(string(data), "\n")
 	if maxLines > 0 && len(lines) > maxLines {
@@ -202,13 +205,14 @@ func parseRoadmap(path string, maxLines int) (rows []QueuedItem, doNow bool, err
 	}
 
 	if !doNow {
-		return nil, false, nil // band-only: empty slice, never promoted
+		return nil, false, false, nil // band-only: empty slice, never promoted
 	}
 	if len(doNowRows) > 0 {
 		rows = append(rows, doNowRows[0])
+		doNowSeeded = true
 	}
 	rows = append(rows, bandRows...)
-	return rows, true, nil
+	return rows, true, doNowSeeded, nil
 }
 
 // parseTaskLine parses one roadmap task line of the shape
@@ -276,15 +280,16 @@ func Build(home string) (RadarSnapshot, error) {
 		cards = nil // degraded scan still renders
 	}
 
-	rows, doNow, perr := parseRoadmap(filepath.Join(home, filepath.FromSlash(roadmapRel)), 120)
+	rows, _, seeded, perr := parseRoadmap(filepath.Join(home, filepath.FromSlash(roadmapRel)), 120)
 	degrade := perr
 	if perr == nil {
-		if doNow {
-			if len(rows) > 0 {
-				snap.Queue = append(snap.Queue, rows[1:]...)
-			}
+		if seeded {
+			snap.Queue = append(snap.Queue, rows[1:]...)
 		} else {
-			snap.Queue = []QueuedItem{}
+			// Heading-present-empty and band-only: keep every parsed row in
+			// QUEUE (never dropped), preserving the non-nil []QueuedItem{}
+			// shape so --json emits [] not null (critic r3 R3-4).
+			snap.Queue = append([]QueuedItem{}, rows...)
 		}
 	}
 
@@ -295,20 +300,60 @@ func Build(home string) (RadarSnapshot, error) {
 	// Branch evidence beyond the default-branch log (spec r3 F7 ii).
 	branchMsgs := gitAllMessages(filepath.Join(home, filepath.FromSlash(repoRelPath)))
 
-	// InFlight: rows[0] exists AND a matching active card is in-progress.
-	if doNow && len(rows) > 0 {
-		want := bareID(rows[0].ID)
+	// InFlight (D4): only a Do-now-SEEDED rows[0] promotes — a band row
+	// (seeded=false), even one whose id matches an in-progress card, is never
+	// promoted. Branches on the seeded row:
+	//   (i) matching in-progress card  => card-sourced, status "in-progress";
+	//   (ii) matching card other status => card-sourced via decorateInFlight,
+	//        status = the card's frontmatter status;
+	//   (iii) no matching card          => row-sourced fallback, status "".
+	if seeded {
+		row := rows[0]
+		want := bareID(row.ID)
+		var match *ActiveCard
 		for i := range cards {
-			if bareID(cards[i].ID) == want && cards[i].Status == "in-progress" {
-				snap.InFlight = decorateInFlight(&cards[i], tel, branchMsgs)
+			if bareID(cards[i].ID) == want {
+				match = &cards[i]
 				break
 			}
+		}
+		switch {
+		case match != nil && match.Status == "in-progress":
+			snap.InFlight = decorateInFlight(match, tel, branchMsgs)
+			snap.InFlightCardStatus = "in-progress"
+		case match != nil:
+			snap.InFlight = decorateInFlight(match, tel, branchMsgs)
+			snap.InFlightCardStatus = match.Status
+		default:
+			snap.InFlight = rowInFlight(row, tel)
+			snap.InFlightCardStatus = ""
 		}
 	}
 
 	snap.Stalled = stalledDecisions(cards, rows)
 
 	return snap, degrade
+}
+
+// rowInFlight builds InFlight from a Do-now row when no card matches its id
+// (D4 iii). Stage/Progress default to StageDesign/15; there is no card path to
+// default the re-entry anchor to, so a clean tree leaves ReEntryFile/ReEntryCmd
+// empty. A dirty tree with hunks anchors to the first hunk (the r4 F9
+// filemode-only rule holds: empty when the diff has zero @@ hunks).
+func rowInFlight(row QueuedItem, tel GitTelemetry) *InFlightTask {
+	it := &InFlightTask{
+		ID:          row.ID,
+		Title:       row.Title,
+		Description: row.Title,
+		Stage:       StageDesign,
+		ProgressPct: 15,
+	}
+	if tel.ReEntryFile != "" {
+		it.ReEntryFile = tel.ReEntryFile
+		dir := filepath.Dir(strings.SplitN(tel.ReEntryFile, ":", 2)[0])
+		it.ReEntryCmd = fmt.Sprintf("go test ./%s/ -count=1", dir)
+	}
+	return it
 }
 
 // decorateInFlight applies the r3 F7 mapping over git evidence:
