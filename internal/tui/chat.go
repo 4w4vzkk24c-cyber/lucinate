@@ -1383,6 +1383,34 @@ func (m *chatModel) stageAttachment(path string) {
 	m.notify(fmt.Sprintf("attached %s", filepath.Base(path)))
 }
 
+// lastActivityTime returns the timestamp of the most recent message
+// that carries one, falling back to the current wall clock for empty
+// or timestamp-less transcripts.
+func (m chatModel) lastActivityTime() time.Time {
+	for i := len(m.messages) - 1; i >= 0; i-- {
+		if m.messages[i].timestampMs > 0 {
+			return time.UnixMilli(m.messages[i].timestampMs)
+		}
+	}
+	return time.Now()
+}
+
+// renderTimestampDivider produces the centered accent-colored divider line
+// showing the last activity time, placed between the transcript and the
+// input box:  ──────────  10:15 AM  ──────────
+func (m chatModel) renderTimestampDivider() string {
+	ts := m.lastActivityTime().Format("3:04 PM")
+	label := "  " + ts + "  "
+	labelWidth := lipgloss.Width(label)
+	lineTotal := m.width - labelWidth
+	if lineTotal < 4 {
+		lineTotal = 4
+	}
+	half := lineTotal / 2
+	line := strings.Repeat("─", half) + label + strings.Repeat("─", lineTotal-half)
+	return lipgloss.NewStyle().Foreground(accent).Render(line)
+}
+
 // renderAttachments renders the staged-attachment chips and, while
 // open, the ctrl+a path prompt — the strip above the input.
 func (m *chatModel) renderAttachments() string {
@@ -1798,6 +1826,7 @@ func (m chatModel) View() string {
 	if navConfirm != "" {
 		parts = append(parts, navConfirm)
 	}
+	parts = append(parts, m.renderTimestampDivider())
 	parts = append(parts, input, help)
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
