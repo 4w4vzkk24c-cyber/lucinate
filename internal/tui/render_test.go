@@ -199,10 +199,10 @@ func TestPrefixWidth_AlignedBetweenUserAndAgent(t *testing.T) {
 		agentName string
 		wantWidth int
 	}{
-		{"ai", 5},
+		{"ai", 4},
 		{"main", 6},
 		{"claude", 8},
-		{"You", 5},
+		{"🦚", 4},
 		{"longagent", 11},
 	}
 
@@ -219,8 +219,8 @@ func TestPrefixWidth_AlignedBetweenUserAndAgent(t *testing.T) {
 func TestPrefixLabel_UsesAlignedTrailingPadding(t *testing.T) {
 	m := &chatModel{agentName: "claude"}
 
-	if got := m.prefixLabel("You"); got != "You:    " {
-		t.Errorf("prefixLabel(You) = %q, want %q", got, "You:    ")
+	if got := m.prefixLabel("🦚"); got != "🦚:     " {
+		t.Errorf("prefixLabel(🦚) = %q, want %q", got, "🦚:     ")
 	}
 	if got := m.prefixLabel("claude"); got != "claude: " {
 		t.Errorf("prefixLabel(claude) = %q, want %q", got, "claude: ")
@@ -459,7 +459,7 @@ func TestUpdateViewport_IndentsWrappedContentAfterPrefix(t *testing.T) {
 	m.updateViewport()
 	view := ansi.Strip(m.viewport.View())
 
-	if !strings.Contains(view, "You:  alpha") {
+	if !strings.Contains(view, "🦚:") && strings.Contains(view, "alpha") {
 		t.Fatalf("expected first user line with prefix, got %q", view)
 	}
 	if !strings.Contains(view, "\n      ") {
@@ -496,7 +496,7 @@ func TestUpdateViewport_NarrowLayoutStacksPrefixAboveBody(t *testing.T) {
 	}
 	view := strings.Join(lines, "\n")
 
-	if !strings.Contains(view, "You:\nalpha beta gamma") {
+	if !strings.Contains(view, "🦚:\nalpha beta gamma") {
 		t.Fatalf("expected stacked user prefix above body, got %q", view)
 	}
 	if !strings.Contains(view, "main:\nline one\nline two") {

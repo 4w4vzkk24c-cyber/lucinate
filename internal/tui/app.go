@@ -1029,6 +1029,21 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 				}
 				return m, nil
 			}
+		case "ctrl+j":
+			// Next session — cycle forward through the sidebar list
+			// directly from chat without opening /sessions.
+			if m.state == viewChat {
+				if next, ok := m.cycleSession(1); ok {
+					return m, func() tea.Msg { return next }
+				}
+			}
+		case "ctrl+k":
+			// Previous session — cycle backward through the sidebar list.
+			if m.state == viewChat {
+				if prev, ok := m.cycleSession(-1); ok {
+					return m, func() tea.Msg { return prev }
+				}
+			}
 		case "q":
 			// q quits on navigation screens, mirroring the CLI's bubbles
 			// list binding — but only on a host that delegates exit to us
@@ -1192,6 +1207,43 @@ func (m *AppModel) resetSidebarCursor() {
 	if len(m.sessionsModel.list.Items()) > 0 {
 		m.sessionsModel.list.Select(0)
 	}
+}
+
+// cycleSession returns a sessionSelectedMsg for the next (dir=1) or
+// previous (dir=-1) session in the sidebar list relative to the
+// currently open chat session. Wraps around at both ends. Returns
+// ok=false when the sidebar has fewer than two sessions or the
+// current session is not in the list.
+func (m *AppModel) cycleSession(dir int) (sessionSelectedMsg, bool) {
+	items := m.sessionsModel.list.Items()
+	var sessions []sessionItem
+	for _, it := range items {
+		if s, ok := it.(sessionItem); ok {
+			sessions = append(sessions, s)
+		}
+	}
+	if len(sessions) < 2 {
+		return sessionSelectedMsg{}, false
+	}
+	current := m.chatModel.sessionKey
+	for i, s := range sessions {
+		if s.key == current {
+			next := (i + dir + len(sessions)) % len(sessions)
+			return sessionSelectedMsg{
+				sessionKey: sessions[next].key,
+				agentID:    m.sessionsModel.agentID,
+				agentName:  m.sessionsModel.agentName,
+				modelID:    m.sessionsModel.modelID,
+			}, true
+		}
+	}
+	// Current session not in the list (e.g., a cron transcript) — jump to the first.
+	return sessionSelectedMsg{
+		sessionKey: sessions[0].key,
+		agentID:    m.sessionsModel.agentID,
+		agentName:  m.sessionsModel.agentName,
+		modelID:    m.sessionsModel.modelID,
+	}, true
 }
 
 // applyChatLayout sizes the chat view (and, on wide terminals, the

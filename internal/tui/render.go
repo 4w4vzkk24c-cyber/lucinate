@@ -149,11 +149,22 @@ func (m *chatModel) writePrefix(b *strings.Builder, style lipgloss.Style, name s
 	return strings.Repeat(" ", len(label)), contentWidth - len(label)
 }
 
+// peacockDisplayWidth is the terminal column count of the 🦚 emoji
+// (U+1F99A, East Asian Wide — 2 columns in most terminal fonts).
+const peacockDisplayWidth = 2
+
+// displayWidth returns the terminal column count of a string, accounting
+// for the 🦚 emoji (4 UTF-8 bytes, 2 display columns). ASCII-only strings
+// return their byte length unchanged.
+func displayWidth(s string) int {
+	return len(s) - 2*strings.Count(s, "🦚")
+}
+
 // prefixWidth returns the shared width used for message prefixes so message
 // bodies start in the same column for both user and assistant rows.
 func (m *chatModel) prefixWidth() int {
-	w := len("🦚:") // display width of the peacock emoji + colon
-	if aw := len(m.agentName + ":"); aw > w {
+	w := peacockDisplayWidth + 1 // display width of "🦚:"
+	if aw := displayWidth(m.agentName + ":"); aw > w {
 		w = aw
 	}
 	return w + 1
@@ -162,7 +173,7 @@ func (m *chatModel) prefixWidth() int {
 // prefixLabel returns the displayed label for a message prefix.
 func (m *chatModel) prefixLabel(name string) string {
 	label := name + ":"
-	for len(label) < m.prefixWidth()-1 {
+	for displayWidth(label) < m.prefixWidth()-1 {
 		label += " "
 	}
 	return label + " "
