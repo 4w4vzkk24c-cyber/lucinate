@@ -1,6 +1,7 @@
 package radar
 
 // RED acceptance suite for card 1602 (state-radar CLI) — AC1–AC7 + M1–M9 kill map.
+// Card 1606 v1.1 (r5): AC8-AC11 pinned RED-first via M10-M13 - see the map tail.
 //
 // Contract: quorum-test-generator writes tests only. At base this package has no
 // implementation, so the suite is red by design until quorum-builder lands
@@ -18,6 +19,18 @@ package radar
 //
 // Hermeticity: every fixture lives under t.TempDir(); HOME is overridden for every
 // binary exec; no test reads ~/Repositories/kanban-zed or ~/Obsidian/Roadmap.
+//
+// 1606 v1.1 kill-map additions (card 1606, spec r5):
+//	M10 -> TestRenderWidthCap (width-cap removal: termWidth unbounded or init-cached)
+//	M11 -> TestCollectGitAuthorCaseInsensitive (-i removal: --author=Zane case-sensitive again)
+//	M12 -> TestRenderCapsAndMoreLine (display-cap removal: rows uncapped, '+N more (of M)' missing)
+//	M13 -> TestBuildDoNowFallbackCardStatus (fallback removal: v1 iff-in-progress restored)
+//
+// D4 (spec r5 named-interaction): TestBuildInFlightContract (a)/(b)/(c) now
+// assert the v1.1 fallback contract - (a) additionally reads
+// InFlightCardStatus "in-progress", (b) is non-nil with card status "todo",
+// (c) is non-nil and row-sourced with "" - RED-then-GREEN with the builder's
+// changes. The other 20 test functions stay byte-untouched.
 
 import (
 	"encoding/json"
@@ -26,6 +39,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -33,6 +47,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // ---------------------------------------------------------------- scaffolding
@@ -787,25 +802,67 @@ func TestBuildInFlightContract(t *testing.T) {
 		t.Errorf("Queue must be rows[1:]: %+v", snap.Queue)
 	}
 
-	// (b) Do-now card exists but is NOT in-progress => InFlight nil.
+	// 1606 D4 (i): the in-progress match also records the card-status field,
+	// read through reflection (cardStatus) so the amended assertion compiles
+	// at the RED base, where types.go does not yet carry the field.
+	if got := cardStatus(t, snap); got != "in-progress" {
+		t.Errorf("InFlightCardStatus: want in-progress (D4 i), got %q", got)
+	}
+
+	// (b) 1606 D4 (ii) amendment: the Do-now card at a non-in-progress status
+	// still builds InFlight from that card through the decorateInFlight path;
+	// the mismatch surfaces via InFlightCardStatus ("todo"). RED at base: v1
+	// leaves InFlight nil here.
 	home = homeFixture(t, []cardSpec{{id: "1461", title: "Wire the radar scan loop", status: "todo", priority: "high"}}, deltaFixture)
 	snap, err = Build(home)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if snap.InFlight != nil {
-		t.Errorf("InFlight must be nil when the Do-now card is not in-progress: %+v", snap.InFlight)
+	if snap.InFlight == nil {
+		t.Errorf("(b): InFlight must be non-nil for the Do-now card at todo (D4 ii fallback)")
+	} else {
+		if normID(snap.InFlight.ID) != "1461" {
+			t.Errorf("(b): card-sourced InFlight.ID: want 1461, got %q", snap.InFlight.ID)
+		}
+		if snap.InFlight.Title != "Wire the radar scan loop" {
+			t.Errorf("(b): card-sourced InFlight.Title: want the card title, got %q", snap.InFlight.Title)
+		}
+		if !strings.HasSuffix(snap.InFlight.ReEntryFile, "1461-card.md") {
+			t.Errorf("(b): clean-tree ReEntryFile must default to the card path (same decorateInFlight path), got %q", snap.InFlight.ReEntryFile)
+		}
+	}
+	if got := cardStatus(t, snap); got != "todo" {
+		t.Errorf("(b): InFlightCardStatus: want todo, got %q", got)
 	}
 
-	// (c) Do-now card id has no kanban match at all => InFlight nil.
+	// (c) 1606 D4 (iii) amendment: no card matches the Do-now id at all =>
+	// InFlight is built from the ROW itself (row id/text, StageDesign/15,
+	// clean tree => empty ReEntryFile/ReEntryCmd: no card path to default
+	// to). RED at base: v1 leaves InFlight nil here.
 	orphan := strings.Replace(deltaFixture, "*kanban #1461*", "*kanban #9999*", 1)
 	home = homeFixture(t, []cardSpec{{id: "1461", title: "Wire the radar scan loop", status: "in-progress", priority: "high"}}, orphan)
 	snap, err = Build(home)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if snap.InFlight != nil {
-		t.Errorf("InFlight must be nil when no card matches the Do-now id: %+v", snap.InFlight)
+	if snap.InFlight == nil {
+		t.Errorf("(c): InFlight must be non-nil (row-sourced fallback, D4 iii)")
+	} else {
+		if normID(snap.InFlight.ID) != "9999" {
+			t.Errorf("(c): row-sourced InFlight.ID: want 9999, got %q", snap.InFlight.ID)
+		}
+		if snap.InFlight.Title != "Wire the radar scan loop" || snap.InFlight.Description != "Wire the radar scan loop" {
+			t.Errorf("(c): row-sourced Title/Description must equal the row text, got %q/%q", snap.InFlight.Title, snap.InFlight.Description)
+		}
+		if snap.InFlight.Stage != StageDesign || snap.InFlight.ProgressPct != 15 {
+			t.Errorf("(c): want StageDesign/15, got %v/%d", snap.InFlight.Stage, snap.InFlight.ProgressPct)
+		}
+		if snap.InFlight.ReEntryFile != "" || snap.InFlight.ReEntryCmd != "" || snap.InFlight.ContextNote != "" {
+			t.Errorf("(c): clean tree + no card => empty ReEntryFile/ReEntryCmd/ContextNote, got %q/%q/%q", snap.InFlight.ReEntryFile, snap.InFlight.ReEntryCmd, snap.InFlight.ContextNote)
+		}
+	}
+	if got := cardStatus(t, snap); got != "" {
+		t.Errorf("(c): InFlightCardStatus must stay empty with no card, got %q", got)
 	}
 }
 
@@ -1164,5 +1221,575 @@ func TestSuiteHermeticity(t *testing.T) {
 		if strings.Contains(string(src), usersNeedle) {
 			t.Errorf("%s contains an absolute home-path literal — store paths must resolve via os.UserHomeDir()", e.Name())
 		}
+	}
+}
+
+// ----------------------------------------------------------------
+// 1606 v1.1: D1-D4 RED pins (AC8-AC11; mutations M10-M13)
+// ----------------------------------------------------------------
+
+// The pins below are RED at 6a2536e by design: no width cap (D1), no -i
+// author flags (D2), no 5-row display caps (D3), no Do-now fallback (D4).
+// RadarSnapshot.InFlightCardStatus (D4's one new field) does not exist at
+// base, so every v1.1 field assertion reads it by reflection (cardStatus) or
+// from the rendered --json map (renderJSONCardStatus): compile-safe at the
+// RED base (the untouched 20 tests keep their per-test verdicts), then
+// real-value assertions once the builder lands types.go.
+
+var sgrRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+// sgrStrip removes ANSI SGR sequences - the AC8 measurement preprocess.
+func sgrStrip(s string) string {
+	return sgrRe.ReplaceAllString(s, "")
+}
+
+// visibleWidth counts the runes a line occupies after SGR stripping; every
+// AC8 fixture row is ASCII, so runes equal displayed columns.
+func visibleWidth(s string) int {
+	return utf8.RuneCountInString(sgrStrip(s))
+}
+
+// maxLineWidth is the widest rendered line after SGR stripping.
+func maxLineWidth(s string) int {
+	widest := 0
+	for _, ln := range strings.Split(s, "\n") {
+		if w := visibleWidth(ln); w > widest {
+			widest = w
+		}
+	}
+	return widest
+}
+
+// cardStatus reads RadarSnapshot.InFlightCardStatus by reflection - the
+// compile-safe seam; a missing field is an explicit test failure (the RED
+// shape at base), never a package build error.
+func cardStatus(t *testing.T, snap RadarSnapshot) string {
+	t.Helper()
+	v := reflect.ValueOf(snap).FieldByName("InFlightCardStatus")
+	if !v.IsValid() {
+		t.Errorf("RadarSnapshot.InFlightCardStatus field missing (1606 D4 unimplemented at base)")
+		return ""
+	}
+	return v.String()
+}
+
+// renderJSONCardStatus reads InFlightCardStatus out of the rendered --json
+// document (map-key access; same compile-safe seam as cardStatus).
+func renderJSONCardStatus(t *testing.T, snap RadarSnapshot) string {
+	t.Helper()
+	out, err := RenderJSON(snap)
+	if err != nil {
+		t.Fatalf("RenderJSON: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("RenderJSON output is not a JSON object: %v (%s)", err, out)
+	}
+	s, ok := doc["InFlightCardStatus"].(string)
+	if !ok {
+		t.Errorf("RenderJSON output lacks an InFlightCardStatus string (1606 D4): %s", out)
+		return ""
+	}
+	return s
+}
+
+// degradeErr builds the sentinel wrap the renderers accept, for D1's
+// degrade-phrase exception cases.
+func degradeErr() error {
+	return fmt.Errorf("roadmap unavailable: %w", ErrRoadmapUnavailable)
+}
+
+// linesContain reports whether any one line fully contains the needle.
+func linesContain(lines []string, needle string) bool {
+	for _, ln := range lines {
+		if strings.Contains(ln, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestRenderWidthCap pins AC8 (D1): every rendered line of both modes stays
+// within min(termWidth, 100) visible columns (SGR-stripped rune count), with
+// termWidth resolved PER RENDER CALL (the COLUMNS=60 case fails exactly when
+// a resolver caches at init): COLUMNS=200 -> hard cap 100; COLUMNS=60 -> 60;
+// COLUMNS unset (piped semantics) -> the default-100 bound; --summary stays
+// exactly 3 lines under width clipping; the degrade phrase renders whole
+// even at COLUMNS=20 (the greppability exclusion band), with every
+// non-exempt line still bounded.
+func TestRenderWidthCap(t *testing.T) {
+	long := strings.Repeat("w", 160)
+	snap := RadarSnapshot{
+		Timestamp: time.Now(),
+		InFlight:  &InFlightTask{ID: "1461", Title: long, Stage: StageDesign, ProgressPct: 15},
+		Stalled:   []StalledDecision{{ID: "8001", Title: long, Blocker: "blocked"}},
+		Queue:     []QueuedItem{{ID: "7001", Title: "q-row " + long, Priority: "476"}},
+	}
+	degraded := RadarSnapshot{Timestamp: time.Now()}
+
+	// assertBounded pins both modes at the current COLUMNS value.
+	assertBounded := func(bound int) {
+		t.Helper()
+		if w := maxLineWidth(RenderFull(snap, nil)); w > bound {
+			t.Errorf("RenderFull widest line is %d visible cols > bound %d", w, bound)
+		}
+		sum := RenderSummary(snap, nil)
+		lines := strings.Split(strings.TrimRight(sum, "\n"), "\n")
+		if len(lines) != 3 {
+			t.Errorf("RenderSummary must stay exactly 3 lines, got %d: %q", len(lines), sum)
+		}
+		for i, ln := range lines {
+			if w := visibleWidth(ln); w > bound {
+				t.Errorf("RenderSummary line %d is %d visible cols > bound %d: %q", i+1, w, bound, ln)
+			}
+		}
+	}
+
+	t.Setenv("COLUMNS", "200")
+	assertBounded(100) // min(200, 100): the hard cap, not the env value
+
+	// Per-call resolver pin: an init-cached width (100) fails exactly here.
+	t.Setenv("COLUMNS", "60")
+	assertBounded(60)
+
+	// COLUMNS unset (piped semantics): present-but-unparseable would take the
+	// TTY path, so the variable is removed for real; the bound is the piped
+	// default 100. t.Setenv has registered the original value's restore.
+	t.Setenv("COLUMNS", "unparseable")
+	if err := os.Unsetenv("COLUMNS"); err != nil {
+		t.Fatal(err)
+	}
+	assertBounded(100)
+
+	// D1 exception, both modes: the degrade phrase stays contiguous even
+	// where a strict clip would lose it (COLUMNS=20: content budget 14 < the
+	// 33-col phrase), while every non-exempt line stays bounded.
+	for _, w := range []int{40, 20} {
+		t.Setenv("COLUMNS", strconv.Itoa(w))
+		for mode, out := range map[string]string{
+			"full":    RenderFull(degraded, degradeErr()),
+			"summary": RenderSummary(degraded, degradeErr()),
+		} {
+			lines := strings.Split(out, "\n")
+			whole := false
+			for _, ln := range lines {
+				if strings.Contains(ln, degradeMessage) {
+					whole = true
+					break
+				}
+			}
+			if !whole {
+				t.Errorf("[mode=%s COLUMNS=%d] degrade phrase split or lost - the greppability exception must keep it on one line: %q", mode, w, out)
+			}
+			for _, ln := range lines {
+				if strings.Contains(ln, degradeMessage) {
+					continue // the only exempt line class
+				}
+				if vw := visibleWidth(ln); vw > w {
+					t.Errorf("[mode=%s COLUMNS=%d] non-exempt line is %d visible cols > bound %d: %q", mode, w, vw, w, ln)
+				}
+			}
+		}
+		sum := RenderSummary(degraded, degradeErr())
+		if got := strings.Split(strings.TrimRight(sum, "\n"), "\n"); len(got) != 3 {
+			t.Errorf("degraded --summary must stay 3 lines at COLUMNS=%d, got %d: %q", w, len(got), sum)
+		}
+	}
+}
+
+// TestCollectGitAuthorCaseInsensitive pins AC9 (D2): BOTH --author-filtered
+// git log sites (CollectGit's Landed log and gitAllMessages' decoration log)
+// pass -i, so --author=Zane matches any letter-case of the author name, and
+// no other flag changes. RED at base: the case-sensitive filter leaves the
+// lowercase-authored day structurally empty while DirtyFiles/ReEntryFile on
+// the same fixture stay green (the live 13:55 CDT defect shape).
+func TestCollectGitAuthorCaseInsensitive(t *testing.T) {
+	home := t.TempDir()
+	repo := filepath.Join(home, "repo")
+	if err := os.MkdirAll(filepath.Join(repo, "cmd"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, home, repo, "init", "-b", "main")
+	runGit(t, home, repo, "config", "user.name", "Zane")
+	runGit(t, home, repo, "config", "user.email", "zane@fixture.invalid")
+
+	// Commit 1: authored entirely lowercase, straight through the
+	// GIT_AUTHOR_NAME env seam (the fixture never touches config user.name).
+	if err := os.WriteFile(filepath.Join(repo, "cmd", "lower.go"), []byte("alpha\nbeta\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, home, repo, "add", "-A")
+	commitAs(t, home, repo, "zanerobinson", "feat(1607): lowercase authored fresh work")
+
+	// Commit 2: uppercase author control (TestCollectGitTelemetry's shape)
+	// - must stay green before and after the -i add.
+	if err := os.WriteFile(filepath.Join(repo, "control.txt"), []byte("control\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, home, repo, "add", "-A")
+	commitAs(t, home, repo, "Zane", "fix(1607): uppercase authored control")
+
+	// Dirty the tracked file: the DirtyFiles/ReEntryFile pair is the
+	// isolation control that stays green on exactly the fixture whose Landed
+	// assertion goes red (isolating the author filter as the killed mechanism).
+	if err := os.WriteFile(filepath.Join(repo, "cmd", "lower.go"), []byte("alpha\nbeta\ngamma\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := CollectGit(repo, time.Now())
+	if err != nil {
+		t.Fatalf("CollectGit: %v", err)
+	}
+	if len(got.DirtyFiles) != 1 || !strings.HasSuffix(got.DirtyFiles[0], "cmd/lower.go") {
+		t.Errorf("isolation control: DirtyFiles must stay green on the lowercase fixture, got %v", got.DirtyFiles)
+	}
+	if got.ReEntryFile != "cmd/lower.go:3" {
+		t.Errorf("isolation control: ReEntryFile must stay green, got %q", got.ReEntryFile)
+	}
+	if !landedHas(got.Landed, "lowercase authored fresh work") {
+		t.Errorf("Landed must match the lowercase author zanerobinson via -i (RED at base: case-sensitive --author=Zane), got %+v", got.Landed)
+	}
+	if !landedHas(got.Landed, "uppercase authored control") {
+		t.Errorf("Landed must keep matching uppercase Zane (control stays green verbatim), got %+v", got.Landed)
+	}
+
+	// The decoration site (gitAllMessages) needs -i too: branch evidence.
+	msgs := gitAllMessages(repo)
+	if !anyContains(msgs, "lowercase authored fresh work") {
+		t.Errorf("gitAllMessages must match the lowercase author (second -i site), got %v", msgs)
+	}
+	if !anyContains(msgs, "uppercase authored control") {
+		t.Errorf("gitAllMessages must keep matching uppercase Zane (control), got %v", msgs)
+	}
+}
+
+// commitAs authors one fresh commit with an explicit GIT_AUTHOR identity.
+func commitAs(t *testing.T, home, repo, author, subject string) {
+	t.Helper()
+	cmd := exec.Command("git", "commit", "-m", subject)
+	cmd.Dir = repo
+	cmd.Env = append(gitEnv(home),
+		"GIT_AUTHOR_NAME="+author,
+		"GIT_AUTHOR_EMAIL="+strings.ToLower(author)+"@fixture.invalid",
+		"GIT_COMMITTER_NAME=Zane",
+		"GIT_COMMITTER_EMAIL=zane@fixture.invalid",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git commit as %q: %v: %s", author, err, out)
+	}
+}
+
+// landedHas reports whether any LandedEvidence message contains the needle.
+func landedHas(landed []LandedEvidence, needle string) bool {
+	for _, e := range landed {
+		if strings.Contains(e.Message, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// anyContains reports whether any commit message contains the needle.
+func anyContains(msgs []string, needle string) bool {
+	for _, m := range msgs {
+		if strings.Contains(m, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestRenderCapsAndMoreLine pins AC10 (D3): the queue and stalled sections
+// render at most the first 5 rows plus a final '+N more (of M)' line; <=5
+// items render no more-line; section headers keep the totals; --summary
+// line 2 keeps totals (and 3 lines); --json stays uncapped. The snapshot is
+// a hand-built RadarSnapshot literal, never through Build: Build caps
+// Stalled at 4, so the 7-stalled fixture is only reachable as a literal
+// (spec critic r1 F3).
+func TestRenderCapsAndMoreLine(t *testing.T) {
+	snap := RadarSnapshot{
+		Timestamp: time.Now(),
+		InFlight:  &InFlightTask{ID: "1461", Title: "Wire the radar scan loop", Stage: StageDesign, ProgressPct: 15},
+		Stalled:   stalledFixture(7, 8001),
+		Queue:     queueFixture(8, 7001),
+	}
+	full := sgrStrip(RenderFull(snap, nil))
+	assertSectionWindow(t, full, "QUEUE (8)", seqIDs(8, 7001), 5, "+3 more (of 8)")
+	assertSectionWindow(t, full, "STALLED (7)", seqIDs(7, 8001), 5, "+2 more (of 7)")
+
+	// <=5 items: exact rows, no more-line (queue at the 5 boundary and at 2,
+	// stalled at the 5 boundary).
+	five := RadarSnapshot{
+		Timestamp: time.Now(),
+		InFlight:  &InFlightTask{ID: "1461", Title: "Wire the radar scan loop", Stage: StageDesign, ProgressPct: 15},
+		Stalled:   stalledFixture(5, 8001),
+		Queue:     queueFixture(5, 7001),
+	}
+	full5 := sgrStrip(RenderFull(five, nil))
+	assertSectionFull(t, full5, "QUEUE (5)", seqIDs(5, 7001))
+	assertSectionFull(t, full5, "STALLED (5)", seqIDs(5, 8001))
+
+	two := RadarSnapshot{
+		Timestamp: time.Now(),
+		Queue:     queueFixture(2, 7001),
+	}
+	full2 := sgrStrip(RenderFull(two, nil))
+	assertSectionFull(t, full2, "QUEUE (2)", seqIDs(2, 7001))
+
+	// --summary keeps the totals (never the capped 5) and stays 3 lines.
+	sum := RenderSummary(snap, nil)
+	lines := strings.Split(strings.TrimRight(sum, "\n"), "\n")
+	if len(lines) != 3 {
+		t.Errorf("--summary must stay 3 lines, got %d: %q", len(lines), sum)
+	}
+	if lines[1] != "QUEUE 8 \u00b7 STALLED 7" {
+		t.Errorf("--summary line 2 must keep the totals, want %q, got %q", "QUEUE 8 \u00b7 STALLED 7", lines[1])
+	}
+
+	// --json stays uncapped: render caps never mutate the snapshot.
+	var jsnap RadarSnapshot
+	out, err := RenderJSON(snap)
+	if err != nil {
+		t.Fatalf("RenderJSON: %v", err)
+	}
+	if err := json.Unmarshal(out, &jsnap); err != nil {
+		t.Fatalf("--json unmarshal: %v", err)
+	}
+	if len(jsnap.Queue) != 8 || len(jsnap.Stalled) != 7 {
+		t.Errorf("--json must stay uncapped (queue 8, stalled 7), got %d/%d", len(jsnap.Queue), len(jsnap.Stalled))
+	}
+}
+
+// queueFixture builds n ranked QueuedItems with decimal ids from firstID.
+func queueFixture(n, firstID int) []QueuedItem {
+	items := make([]QueuedItem, 0, n)
+	for i := 0; i < n; i++ {
+		items = append(items, QueuedItem{
+			ID:       strconv.Itoa(firstID + i),
+			Title:    fmt.Sprintf("Queue fixture row %d", i+1),
+			Priority: strconv.Itoa(900 - i),
+		})
+	}
+	return items
+}
+
+// stalledFixture builds n StalledDecisions with decimal ids from firstID.
+func stalledFixture(n, firstID int) []StalledDecision {
+	items := make([]StalledDecision, 0, n)
+	blockers := []string{"blocked", "review"}
+	for i := 0; i < n; i++ {
+		items = append(items, StalledDecision{
+			ID:      strconv.Itoa(firstID + i),
+			Title:   fmt.Sprintf("Stalled fixture row %d", i+1),
+			Blocker: blockers[i%len(blockers)],
+		})
+	}
+	return items
+}
+
+// seqIDs is the id list firstID..firstID+n-1, in decimal.
+func seqIDs(n, firstID int) []string {
+	ids := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		ids = append(ids, strconv.Itoa(firstID+i))
+	}
+	return ids
+}
+
+// assertSectionWindow pins the D3 cap for one section: the header carries
+// the total, exactly the first `shown` ids render as rows, later row bodies
+// are absent, and the '+N more (of M)' line appears exactly once.
+func assertSectionWindow(t *testing.T, out, header string, ids []string, shown int, moreLine string) {
+	t.Helper()
+	lines := strings.Split(out, "\n")
+	if !linesContain(lines, header) {
+		t.Errorf("section header %q missing (totals are unchanged by the cap)", header)
+	}
+	for i, id := range ids {
+		hits := 0
+		for _, ln := range lines {
+			if strings.Contains(ln, "#"+id) {
+				hits++
+			}
+		}
+		if i < shown {
+			if hits != 1 {
+				t.Errorf("row %q must render exactly once within the first %d, found %d lines", id, shown, hits)
+			}
+			continue
+		}
+		if hits != 0 {
+			t.Errorf("row %q sits beyond the display cap and must not render, found %d lines", id, hits)
+		}
+	}
+	if n := strings.Count(out, moreLine); n != 1 {
+		t.Errorf("more-line %q must appear exactly once, got %d", moreLine, n)
+	}
+}
+
+// assertSectionFull pins an under-cap section: the total header, every row
+// rendered exactly once, and no more-line at all.
+func assertSectionFull(t *testing.T, out, header string, ids []string) {
+	t.Helper()
+	if !linesContain(strings.Split(out, "\n"), header) {
+		t.Errorf("section header %q missing", header)
+	}
+	assertFullRows(t, out, ids)
+	assertNoMoreLine(t, out)
+}
+
+// assertFullRows pins that every fixture id renders exactly once.
+func assertFullRows(t *testing.T, out string, ids []string) {
+	t.Helper()
+	lines := strings.Split(out, "\n")
+	for _, id := range ids {
+		if !linesContain(lines, "#"+id) {
+			t.Errorf("uncapped section must render row %q; missing from: %s", id, out)
+		}
+	}
+}
+
+// assertNoMoreLine fails when any '+N more (of M)' line appears.
+func assertNoMoreLine(t *testing.T, out string) {
+	t.Helper()
+	re := regexp.MustCompile(`\+\d+ more \(of \d+\)`)
+	if re.MatchString(out) {
+		t.Errorf("sections with <=5 items must not render a more-line, found one in: %s", out)
+	}
+}
+
+// headingEmptyDelta is the Do-now seed-gate input (spec critic r1 F1 / R2-1):
+// the '## Do now' heading matches but ZERO task lines parse under it, so
+// rows[0] is a band row (doNowSeeded=false) whose id here matches an
+// in-progress card - the promotion v1 wrongly fires and v1.1 must gate.
+const headingEmptyDelta = "# Roadmap\n\n" +
+	"## Do now (deep-work WIP = 1)\n\n" +
+	"## Ranked \u2014 decisions\n\n" +
+	"### 457 \u2014 1 item\n\n" +
+	"- [ ] `   457` Ship the Solarized render pass \u2014 *kanban #1461* \u00b7 `medium/hours`\n"
+
+// TestBuildDoNowFallbackCardStatus pins AC11 (D4) end to end: the Do-now row
+// with a matching card at 'backlog' builds InFlight from the card with
+// InFlightCardStatus "backlog" plus both render markers (full-card
+// ' [card: backlog]', summary line 1 ' STATUS?' within the 3-line
+// contract); the in-progress match sets "in-progress" with no markers; the
+// heading-present-empty roadmap leaves InFlight nil with the band row still
+// in Queue (never promoted, even though its id matches the in-progress
+// card); the band-only roadmap keeps InFlight nil with a non-nil empty
+// Queue whose --json renders the literal [] (never null).
+func TestBuildDoNowFallbackCardStatus(t *testing.T) {
+	// (1) Do-now row + card at 'backlog' => card-sourced InFlight + markers.
+	home := homeFixture(t, []cardSpec{
+		{id: "1461", title: "Wire the radar scan loop", status: "backlog", priority: "high"},
+	}, deltaFixture)
+	snap, err := Build(home)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if snap.InFlight == nil {
+		t.Errorf("backlog card + Do-now row: InFlight must be non-nil (D4 ii fallback; RED at base: v1 leaves nil)")
+	} else {
+		if normID(snap.InFlight.ID) != "1461" {
+			t.Errorf("card-sourced InFlight.ID: want 1461, got %q", snap.InFlight.ID)
+		}
+		if snap.InFlight.Title != "Wire the radar scan loop" {
+			t.Errorf("card-sourced InFlight.Title: want the card title, got %q", snap.InFlight.Title)
+		}
+		if !strings.HasSuffix(snap.InFlight.ReEntryFile, "1461-card.md") {
+			t.Errorf("clean-tree ReEntryFile must default to the card path (decorateInFlight), got %q", snap.InFlight.ReEntryFile)
+		}
+	}
+	if got := cardStatus(t, snap); got != "backlog" {
+		t.Errorf("backlog card + Do-now row: InFlightCardStatus want backlog, got %q", got)
+	}
+	if !strings.Contains(sgrStrip(RenderFull(snap, nil)), " [card: backlog]") {
+		t.Errorf("full card active line must carry the [card: backlog] marker, got %q", RenderFull(snap, nil))
+	}
+	sum := RenderSummary(snap, nil)
+	sumLines := strings.Split(strings.TrimRight(sum, "\n"), "\n")
+	if len(sumLines) != 3 {
+		t.Errorf("summary must stay exactly 3 lines with the mismatch marker, got %d: %q", len(sumLines), sum)
+	}
+	if !strings.Contains(sgrStrip(sumLines[0]), " STATUS?") {
+		t.Errorf("summary line 1 must carry the STATUS? marker, got %q", sumLines[0])
+	}
+	if linesContain(sumLines[1:], "STATUS?") {
+		t.Errorf("STATUS? must stay on summary line 1, leaked into: %v", sumLines[1:])
+	}
+	// Seeded => Queue is rows[1:]: band rows stay, the Do-now row leaves.
+	if len(snap.Queue) != 2 || normID(snap.Queue[0].ID) != "1388" || normID(snap.Queue[1].ID) != "1405" {
+		t.Errorf("seeded Queue split: want rows[1:] = [1388 1405], got %+v", snap.Queue)
+	}
+	if got := renderJSONCardStatus(t, snap); got != "backlog" {
+		t.Errorf("--json InFlightCardStatus want backlog, got %q", got)
+	}
+
+	// (2) in-progress match => field "in-progress", no markers anywhere.
+	home = homeFixture(t, []cardSpec{
+		{id: "1461", title: "Wire the radar scan loop", status: "in-progress", priority: "high"},
+	}, deltaFixture)
+	snap, err = Build(home)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if got := cardStatus(t, snap); got != "in-progress" {
+		t.Errorf("in-progress match: InFlightCardStatus want in-progress, got %q", got)
+	}
+	if full := sgrStrip(RenderFull(snap, nil)); strings.Contains(full, "[card:") || strings.Contains(full, "STATUS?") {
+		t.Errorf("in-progress match must render no markers in the full card, got %q", full)
+	}
+	if sum := RenderSummary(snap, nil); strings.Contains(sum, "STATUS?") {
+		t.Errorf("in-progress match must not surface STATUS? in the summary, got %q", sum)
+	}
+
+	// (3) heading-present-empty roadmap: Do-now heading matched, zero task
+	// lines => InFlight nil, band rows in Queue, NO ACTIVE WORK in both
+	// modes (never promoted, even with the matching in-progress card).
+	home = homeFixture(t, []cardSpec{
+		{id: "1461", title: "Wire the radar scan loop", status: "in-progress", priority: "high"},
+	}, headingEmptyDelta)
+	snap, err = Build(home)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if snap.InFlight != nil {
+		t.Errorf("heading-present-empty: band row #1461 must never promote to InFlight (RED at base: v1 promotes it), got %+v", snap.InFlight)
+	}
+	if got := cardStatus(t, snap); got != "" {
+		t.Errorf("heading-present-empty: InFlightCardStatus must be empty, got %q", got)
+	}
+	if len(snap.Queue) != 1 || normID(snap.Queue[0].ID) != "1461" {
+		t.Errorf("heading-present-empty: the band rows must land in Queue (never dropped), want [1461], got %+v", snap.Queue)
+	}
+	for mode, out := range map[string]string{
+		"full":    RenderFull(snap, nil),
+		"summary": RenderSummary(snap, nil),
+	} {
+		if !strings.Contains(sgrStrip(out), "NO ACTIVE WORK") {
+			t.Errorf("heading-present-empty: %s mode must render NO ACTIVE WORK, got %q", mode, out)
+		}
+	}
+
+	// (4) band-only roadmap: InFlight nil; Queue the empty non-nil
+	// []QueuedItem{} whose --json keeps the literal [] (never null).
+	home = homeFixture(t, []cardSpec{
+		{id: "1388", title: "Ship the Solarized render pass", status: "todo", priority: "high"},
+	}, bandOnlyDeltaFixture)
+	snap, err = Build(home)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if snap.InFlight != nil {
+		t.Errorf("band-only: InFlight must stay nil, got %+v", snap.InFlight)
+	}
+	if !reflect.DeepEqual(snap.Queue, []QueuedItem{}) {
+		t.Errorf("band-only: Queue must be the empty non-nil []QueuedItem{} (a nil slice must fail), got %#v", snap.Queue)
+	}
+	out, err := RenderJSON(snap)
+	if err != nil {
+		t.Fatalf("RenderJSON: %v", err)
+	}
+	if !strings.Contains(string(out), `"Queue":[]`) {
+		t.Errorf("band-only: --json must keep the literal [] for Queue (never null), got %s", out)
 	}
 }
