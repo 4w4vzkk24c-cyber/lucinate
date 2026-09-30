@@ -10,17 +10,18 @@ import (
 
 var (
 	// Colours — using dark theme values.
-	subtle      = lipgloss.Color("#5C5C5C")
-	accent      = lipgloss.Color("#AD8CFF")
-	userClr     = lipgloss.Color("#48CAE4")
-	errClr      = lipgloss.Color("#FF6B6B")
-	execClr     = lipgloss.Color("#FFB74D")
-	localExcClr = lipgloss.Color("#66BB6A")
+	// Solarized Dark palette
+	subtle      = lipgloss.Color("#586e75") // Base01 — comments, secondary
+	accent      = lipgloss.Color("#2aa198") // Cyan — interactive, selection
+	userClr     = lipgloss.Color("#268bd2") // Blue — user messages
+	errClr      = lipgloss.Color("#dc322f") // Red — errors
+	execClr     = lipgloss.Color("#cb4b16") // Orange — remote exec
+	localExcClr = lipgloss.Color("#859900") // Green — local exec
 
 	// Header bar.
 	headerStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("#FFFFFF")).
+			Foreground(lipgloss.Color("#eee8d5")).
 			Background(accent).
 			Padding(0, 1)
 
@@ -81,12 +82,12 @@ var (
 	// header background where the badge is rendered.
 	headerBadgeWarnStyle = lipgloss.NewStyle().
 				Bold(true).
-				Foreground(lipgloss.Color("#1A0033")).
+				Foreground(lipgloss.Color("#002b36")).
 				Background(accent)
 	headerBadgeErrStyle = lipgloss.NewStyle().
 				Bold(true).
-				Foreground(lipgloss.Color("#FFFFFF")).
-				Background(lipgloss.Color("#B00020")).
+				Foreground(lipgloss.Color("#eee8d5")).
+				Background(lipgloss.Color("#dc322f")).
 				Padding(0, 1)
 
 	// Input area border for exec mode.
@@ -186,12 +187,12 @@ var darkPalette = chatPalette{
 // lightPalette is a light-background variant: darker accents and text
 // colours for contrast on light terminals.
 var lightPalette = chatPalette{
-	subtle:      lipgloss.Color("#6E6E73"),
-	accent:      lipgloss.Color("#6D28D9"),
-	userClr:     lipgloss.Color("#0369A1"),
-	errClr:      lipgloss.Color("#B91C1C"),
-	execClr:     lipgloss.Color("#B45309"),
-	localExcClr: lipgloss.Color("#15803D"),
+	subtle:      lipgloss.Color("#93a1a1"), // Solarized Base1
+	accent:      lipgloss.Color("#2aa198"), // Solarized Cyan
+	userClr:     lipgloss.Color("#268bd2"), // Solarized Blue
+	errClr:      lipgloss.Color("#dc322f"), // Solarized Red
+	execClr:     lipgloss.Color("#cb4b16"), // Solarized Orange
+	localExcClr: lipgloss.Color("#859900"), // Solarized Green
 }
 
 var (
@@ -246,12 +247,12 @@ func newChatTheme(pal chatPalette) chatTheme {
 	return chatTheme{
 		header: lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("#FFFFFF")).
+			Foreground(lipgloss.Color("#eee8d5")).
 			Background(pal.accent).
 			Padding(0, 1),
 		badgeWarn: lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("#1A0033")).
+			Foreground(lipgloss.Color("#002b36")).
 			Background(pal.accent),
 		inputBorder: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).

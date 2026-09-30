@@ -79,20 +79,20 @@ func (d cronDelegate) Render(w io.Writer, m list.Model, index int, item list.Ite
 // chipStyle is a neutral background tag used for sessionTarget / wake /
 // agent chips on each list row.
 var chipStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.Color("#FFFFFF")).
-	Background(lipgloss.Color("#3A3A3A")).
+	Foreground(lipgloss.Color("#eee8d5")).
+	Background(lipgloss.Color("#073642")).
 	Padding(0, 1)
 
 // cronStatusOKStyle is the green badge for last-run==ok.
 var cronStatusOKStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.Color("#0A2A0A")).
-	Background(lipgloss.Color("#5BC85B")).
+	Foreground(lipgloss.Color("#002b36")).
+	Background(lipgloss.Color("#859900")).
 	Bold(true).
 	Padding(0, 1)
 
 // cronStatusErrStyle is the red badge for last-run==error.
 var cronStatusErrStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.Color("#FFFFFF")).
+	Foreground(lipgloss.Color("#eee8d5")).
 	Background(errClr).
 	Bold(true).
 	Padding(0, 1)
@@ -100,7 +100,7 @@ var cronStatusErrStyle = lipgloss.NewStyle().
 // cronStatusDisabledStyle is the dim badge for disabled jobs.
 var cronStatusDisabledStyle = lipgloss.NewStyle().
 	Foreground(subtle).
-	Background(lipgloss.Color("#2A2A2A")).
+	Background(lipgloss.Color("#586e75")).
 	Padding(0, 1)
 
 func statusChip(job protocol.CronJob) string {
