@@ -128,6 +128,12 @@ type sessionsModel struct {
 	loading   bool
 	err       error
 	hideHints bool
+	// hideSubagents filters ":subagent:" sessions from the sidebar
+	// list. Toggled via the 'h' key / toggle-subagents action.
+	hideSubagents bool
+	// allSessions holds the unfiltered session list so toggling
+	// hideSubagents rebuilds the display without a gateway re-fetch.
+	allSessions []sessionItem
 	// selecting is true after the user has picked a session and we're
 	// about to transition into the chat view. The window is brief —
 	// sessionSelectedMsg dispatches synchronously and the chat view's
@@ -310,21 +316,8 @@ func (m sessionsModel) Update(msg tea.Msg) (sessionsModel, tea.Cmd) {
 			m.err = msg.err
 			return m, nil
 		}
-		// Build list items with group headers.
-		var listItems []list.Item
-		lastGroup := ""
-		for _, s := range msg.sessions {
-			if s.group != lastGroup {
-				listItems = append(listItems, sessionGroupHeader{label: s.group})
-				lastGroup = s.group
-			}
-			listItems = append(listItems, s)
-		}
-		m.list.SetItems(listItems)
-		// Skip past the first group header so a session is selected.
-		if len(listItems) > 1 {
-			m.list.Select(1)
-		}
+		m.allSessions = msg.sessions
+		m.rebuildList()
 		return m, nil
 
 	case tea.KeyPressMsg:
@@ -416,6 +409,7 @@ func (m sessionsModel) Actions() []Action {
 	if !m.loading && m.err == nil {
 		actions = append(actions, Action{ID: "new-session", Label: "New session", Key: "n"})
 	}
+	actions = append(actions, Action{ID: "toggle-subagents", Label: "Hide/Show subagents", Key: "h"})
 	actions = append(actions, Action{ID: "back", Label: "Back", Key: "esc"})
 	if m.err != nil {
 		actions = append(actions, Action{ID: "retry", Label: "Retry", Key: "r"})
@@ -428,6 +422,11 @@ func (m sessionsModel) Actions() []Action {
 // same dispatcher.
 func (m sessionsModel) TriggerAction(id string) (sessionsModel, tea.Cmd) {
 	switch id {
+	case "toggle-subagents":
+		m.hideSubagents = !m.hideSubagents
+		m.rebuildList()
+		return m, nil
+
 	case "new-session":
 		if m.loading || m.err != nil {
 			return m, nil
@@ -505,4 +504,27 @@ func (m sessionsModel) View() string {
 
 func (m *sessionsModel) setSize(w, h int) {
 	m.list.SetSize(w, h-2)
+}
+
+// rebuildList reconstructs the display list from allSessions,
+// honoring the hideSubagents filter. Group headers are re-derived
+// so no orphaned "Subagents" header survives filtering.
+func (m *sessionsModel) rebuildList() {
+	var listItems []list.Item
+	lastGroup := ""
+	for _, s := range m.allSessions {
+		if m.hideSubagents && strings.Contains(s.key, ":subagent:") {
+			continue
+		}
+		if s.group != lastGroup {
+			listItems = append(listItems, sessionGroupHeader{label: s.group})
+			lastGroup = s.group
+		}
+		listItems = append(listItems, s)
+	}
+	m.list.SetItems(listItems)
+	// Skip past the first group header so a session is selected.
+	if len(listItems) > 1 {
+		m.list.Select(1)
+	}
 }

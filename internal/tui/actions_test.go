@@ -93,9 +93,9 @@ func TestSessionsModel_Actions(t *testing.T) {
 		err     error
 		wantIDs []string
 	}{
-		{"ready", false, nil, []string{"new-session", "back"}},
-		{"loading", true, nil, []string{"back"}},
-		{"error", false, errors.New("x"), []string{"back", "retry"}},
+		{"ready", false, nil, []string{"new-session", "toggle-subagents", "back"}},
+		{"loading", true, nil, []string{"toggle-subagents", "back"}},
+		{"error", false, errors.New("x"), []string{"toggle-subagents", "back", "retry"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -244,7 +244,7 @@ func TestMaybeNotifyActions_FiresOnChange(t *testing.T) {
 	m.state = viewSessions
 	next, cmd = m.maybeNotifyActions(nil)
 	runCmd(t, cmd)
-	if len(got) != 3 || !equalStrings(got[2], []string{"new-session", "back"}) {
+	if len(got) != 3 || !equalStrings(got[2], []string{"new-session", "toggle-subagents", "back"}) {
 		t.Fatalf("sessions transition: %v", got)
 	}
 }
