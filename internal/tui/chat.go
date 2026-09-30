@@ -186,6 +186,7 @@ type chatModel struct {
 	pendingConfirm     *pendingConfirmation
 	pendingNavConfirm  *pendingNavConfirm
 	notifications      []notification // ephemeral status rows rendered above the input; cleared when the user submits an input
+	palette           *chatPalette   // W2 theme palette resolved from prefs at construction; nil renders the dark defaults
 	historyLimit       int
 	historyLoading     bool   // true while the initial history fetch is in flight; gates the placeholder in updateViewport
 	thinkingLevel      string // current thinking level; "" means not set / using gateway default
@@ -490,10 +491,7 @@ func newChatModel(b backend.Backend, sessionKey, agentID, agentName, modelID str
 
 	vp := viewport.New()
 
-	renderer, _ := glamour.NewTermRenderer(
-		glamour.WithStandardStyle("dark"),
-		glamour.WithWordWrap(80), // updated by setSize() when terminal dimensions are known
-	)
+	renderer, themeWarn := newThemedRenderer(prefs, 80) // wrap width updated by setSize() when terminal dimensions are known
 
 	// initialMessage seeds pendingMessages so the first historyLoadedMsg
 	// drains it through the same queue the textarea uses, matching what
@@ -503,7 +501,8 @@ func newChatModel(b backend.Backend, sessionKey, agentID, agentName, modelID str
 		pending = []string{initialMessage}
 	}
 
-	return chatModel{
+	pal := paletteForMode(prefs.ThemeSettings().Mode)
+	m := chatModel{
 		viewport:        vp,
 		textarea:        ta,
 		backend:         b,
@@ -514,6 +513,7 @@ func newChatModel(b backend.Backend, sessionKey, agentID, agentName, modelID str
 		renderer:        renderer,
 		modelID:         modelID,
 		prefs:           prefs,
+		palette:         &pal,
 		historyLimit:    prefs.HistoryLimit,
 		historyLoading:  true,
 		hideInput:       hideInput,
@@ -525,6 +525,10 @@ func newChatModel(b backend.Backend, sessionKey, agentID, agentName, modelID str
 		// default and are always replaceable on subsequent refreshes.
 		gen: 1,
 	}
+	if themeWarn != "" {
+		m.notifications = append(m.notifications, notification{text: themeWarn, isError: true})
+	}
+	return m
 }
 
 func (m chatModel) Init() tea.Cmd {
@@ -1468,11 +1472,8 @@ func (m *chatModel) setSize(w, h int) {
 	if wrapWidth < 20 {
 		wrapWidth = 20
 	}
-	renderer, err := glamour.NewTermRenderer(
-		glamour.WithStandardStyle("dark"),
-		glamour.WithWordWrap(wrapWidth),
-	)
-	if err == nil {
+	renderer, themeWarn := newThemedRenderer(m.prefs, wrapWidth)
+	if renderer != nil {
 		m.renderer = renderer
 		// Re-render any previously glamour-rendered messages so markdown
 		// reflows when the terminal is resized.
@@ -1483,6 +1484,9 @@ func (m *chatModel) setSize(w, h int) {
 				}
 			}
 		}
+	}
+	if themeWarn != "" {
+		m.notifications = append(m.notifications, notification{text: themeWarn, isError: true})
 	}
 
 	headerH := 1
@@ -1501,7 +1505,18 @@ func (m *chatModel) setSize(w, h int) {
 	m.updateViewport()
 }
 
+// effectivePalette returns the model's resolved palette, falling back to
+// the dark palette for zero-value models (theme never resolved) so their
+// render stays byte-identical to the pre-W2 output.
+func (m chatModel) effectivePalette() chatPalette {
+	if m.palette == nil {
+		return darkPalette
+	}
+	return *m.palette
+}
+
 func (m chatModel) View() string {
+	th := newChatTheme(m.effectivePalette())
 	left := " lucinate"
 	if m.connName != "" {
 		left += " · " + m.connName
@@ -1521,7 +1536,7 @@ func (m chatModel) View() string {
 		left += " · " + badge
 	}
 	headerColor := m.prefs.HeaderColorFor(m.agentID)
-	warnBadgeStyle := headerBadgeWarnStyle
+	warnBadgeStyle := th.badgeWarn
 	if headerColor != "" {
 		warnBadgeStyle = warnBadgeStyle.Background(lipgloss.Color(headerColor))
 	}
@@ -1555,7 +1570,7 @@ func (m chatModel) View() string {
 			title += strings.Repeat(" ", padding) + right
 		}
 	}
-	hdrStyle := headerStyle
+	hdrStyle := th.header
 	if headerColor != "" {
 		hdrStyle = hdrStyle.Background(lipgloss.Color(headerColor))
 	}
@@ -1563,13 +1578,13 @@ func (m chatModel) View() string {
 		Width(m.width).
 		Render(title)
 
-	borderStyle := inputBorderStyle
+	borderStyle := th.inputBorder
 	isRemoteExec := strings.HasPrefix(m.textarea.Value(), "!!")
 	isLocalExec := !isRemoteExec && strings.HasPrefix(m.textarea.Value(), "!")
 	if isRemoteExec {
-		borderStyle = execBorderStyle
+		borderStyle = th.execBorder
 	} else if isLocalExec {
-		borderStyle = localExecBorderStyle
+		borderStyle = th.localBorder
 	}
 
 	var menu string
@@ -1579,11 +1594,11 @@ func (m chatModel) View() string {
 
 	var help string
 	if isRemoteExec {
-		help = helpStyle.Render(execPrefixStyle.Render(" remote command") + " — runs on gateway host")
+		help = th.help.Render(execPrefixStyle.Render(" remote command") + " — runs on gateway host")
 	} else if isLocalExec {
-		help = helpStyle.Render(localExecPrefixStyle.Render(" local command") + " — runs on this machine")
+		help = th.help.Render(localExecPrefixStyle.Render(" local command") + " — runs on this machine")
 	} else if menu != "" {
-		help = helpStyle.Render(fmt.Sprintf(" Tab: extend · Shift+Tab: back · %d matches", len(m.completion.candidates)))
+		help = th.help.Render(fmt.Sprintf(" Tab: extend · Shift+Tab: back · %d matches", len(m.completion.candidates)))
 	} else {
 		value := m.textarea.Value()
 		cursorByte := textareaCursorByteOffset(&m.textarea)
@@ -1598,15 +1613,15 @@ func (m chatModel) View() string {
 			token, suffix = m.cronNameHint(value, cursorByte)
 		}
 		if suffix != "" {
-			help = helpStyle.Render(fmt.Sprintf(" %s%s — tab to complete", token, suffix))
+			help = th.help.Render(fmt.Sprintf(" %s%s — tab to complete", token, suffix))
 		} else if m.hideInput {
-			help = helpStyle.Render(" /help: commands")
+			help = th.help.Render(" /help: commands")
 		} else {
 			helpText := " enter: send | alt+enter: newline | /help: commands"
 			if n := len(m.pendingMessages); n > 0 {
 				helpText += fmt.Sprintf(" | %d queued (up: edit last)", n)
 			}
-			help = helpStyle.Render(helpText)
+			help = th.help.Render(helpText)
 		}
 	}
 

@@ -40,6 +40,42 @@ type Preferences struct {
 
 	// Ask holds the preconfigured defaults for the `ask` subcommand.
 	Ask AskDefaults `json:"ask,omitempty"`
+
+	// Theme holds the loadable-theming settings (W2). Pointer so an
+	// unset theme is omitted from config.json entirely — the on-disk
+	// shape of a pre-W2 config file stays byte-identical.
+	Theme *ThemePreferences `json:"theme,omitempty"`
+}
+
+// Theme mode values for ThemePreferences.Mode.
+const (
+	ThemeModeAuto = "auto"
+	ThemeModeDark = "dark"
+	ThemeModeLight = "light"
+)
+
+// ThemePreferences holds the user-loadable theming settings: a Glamour
+// style template file and a palette mode.
+type ThemePreferences struct {
+	// StylePath points at a Glamour JSON style template. Relative
+	// paths resolve against the lucinate data dir (~/.lucinate) and
+	// persist relative across save/load.
+	StylePath string `json:"stylePath,omitempty"`
+
+	// Mode selects the palette: auto (terminal-background detection),
+	// dark, or light. Empty is treated as auto with dark as the
+	// detection-unavailable default, so a pre-W2 config renders exactly
+	// as before.
+	Mode string `json:"mode,omitempty"`
+}
+
+// ThemeSettings returns the theme preferences, zero-valued when unset,
+// so callers never nil-check.
+func (p Preferences) ThemeSettings() ThemePreferences {
+	if p.Theme == nil {
+		return ThemePreferences{}
+	}
+	return *p.Theme
 }
 
 // AskDefaults holds the preconfigured values for the `lucinate ask`
