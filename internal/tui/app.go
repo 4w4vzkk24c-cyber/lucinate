@@ -987,9 +987,17 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 		m.selectModel.selectingName = ""
 		_, _ = m.chatModel.stopRecording()
 		m.chatModel = newChatModel(m.backend, msg.sessionKey, msg.agentID, msg.agentName, msg.modelID, m.prefs, m.hideInput, connectionLabel(m.activeConn), initialMsg, m.brightCursor)
+		// The picker → chat transition never passes through the sessions
+		// modal, so the sidebar's sessionsModel is still its zero value
+		// here — and applyChatLayout below sizes it on wide terminals,
+		// panicking inside the zero-value list (nil delegate → bubbles
+		// updatePagination). Construct the sidebar for the agent we just
+		// opened, mirroring showSessionsMsg, so the wide chat view has a
+		// live list instead of a bomb.
+		m.sessionsModel = newSessionsModel(m.backend, msg.agentID, msg.agentName, msg.modelID, msg.sessionKey, m.hideActionHints, m.activeConn, m.disableExitKeys)
 		m.state = viewChat
 		m.applyChatLayout()
-		return m, m.chatModel.Init()
+		return m, tea.Batch(m.chatModel.Init(), m.sessionsModel.Init())
 
 	case TriggerActionMsg:
 		return m.TriggerAction(msg.ID)
@@ -1187,7 +1195,12 @@ func (m *AppModel) resetSidebarCursor() {
 // viewChat, so returning from the full-screen sessions modal restores the
 // split without waiting for the next resize event.
 func (m *AppModel) applyChatLayout() {
-	if m.width >= sidebarMinCols {
+	// Size the sidebar only when it exists. A transition into viewChat
+	// that never opened the sessions modal leaves sessionsModel as its
+	// zero value, and the zero-value list panics on SetSize (nil
+	// delegate in bubbles updatePagination) — the same invariant the
+	// WindowSizeMsg switch above protects for the other views.
+	if m.width >= sidebarMinCols && m.sessionsModel.backend != nil {
 		w := clampSidebarWidth(m.width)
 		m.sessionsModel.setSize(w, m.height)
 		m.chatModel.setSize(m.width-w, m.height)
