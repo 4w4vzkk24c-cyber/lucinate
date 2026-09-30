@@ -1549,7 +1549,11 @@ func (m AppModel) View() tea.View {
 	// Hotkey help overlay: when showHelp is toggled, compose a centered
 	// cheat-sheet on top of whatever view is rendered beneath it.
 	if m.showHelp {
-		v = tea.NewView(m.renderHelpOverlay(v.Content))
+		// Compose into the existing view — tea.NewView would replace the
+		// struct and drop AltScreen (plus the keyboard-enhancement and
+		// focus-report flags), kicking the terminal out of the alternate
+		// buffer while the overlay is up.
+		v.Content = m.renderHelpOverlay(v.Content)
 	}
 
 	return v
