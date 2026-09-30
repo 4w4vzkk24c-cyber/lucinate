@@ -1383,6 +1383,20 @@ func (m *chatModel) stageAttachment(path string) {
 	m.notify(fmt.Sprintf("attached %s", filepath.Base(path)))
 }
 
+// safeTextareaView guards against the bubbles textarea panic when its
+// internal value slice is empty (zero-value state — textarea.New() was
+// never called or the model is in a transient state during rapid
+// session switches). LineInfo() indexes m.value[m.row] which panics
+// with "index out of range [0]" on an empty slice.
+func safeTextareaView(ta textarea.Model) (s string) {
+	defer func() {
+		if r := recover(); r != nil {
+			s = ""
+		}
+	}()
+	return ta.View()
+}
+
 // lastActivityTime returns the timestamp of the most recent message
 // that carries one, falling back to the current wall clock for empty
 // or timestamp-less transcripts.
@@ -1798,7 +1812,7 @@ func (m chatModel) View() string {
 
 	input := borderStyle.
 		Width(m.width - 4).
-		Render(m.textarea.View())
+		Render(safeTextareaView(m.textarea))
 
 	parts := []string{header}
 	if infoNotifications != "" {
