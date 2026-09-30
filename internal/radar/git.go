@@ -120,8 +120,10 @@ func parsePorcelain(out string) []string {
 // cutoff applies the 24h window as a post-filter on the committer date: git's
 // --since is a traversal cutoff (it abandons a parent chain at the first
 // too-old commit), which would wrongly drop fresh commits sitting behind an
-// old one. An empty cutoff keeps the whole listing (decoration evidence). The
-// newest five survivors are kept.
+// old one. A non-empty cutoff also caps the result at the newest five
+// survivors (the Landed 24h-evidence contract). An empty cutoff keeps the
+// whole listing with no survivor cap — the caller's git -n bound (25) is the
+// only limit (decoration evidence; spec row 11(ii)).
 func parseLanded(out string, cutoff string) []LandedEvidence {
 	var cut time.Time
 	if cutoff != "" {
@@ -151,7 +153,10 @@ func parseLanded(out string, cutoff string) []LandedEvidence {
 			age = strings.TrimSuffix(rest[i+2:], ")")
 		}
 		landed = append(landed, LandedEvidence{Hash: hash, Message: subject, Age: age})
-		if len(landed) >= 5 {
+		// Survivor cap belongs to the Landed 24h-evidence path only: an empty
+		// cutoff (decoration evidence) must keep the whole -n 25 listing so a
+		// card-ref commit 6+ back is still seen.
+		if !cut.IsZero() && len(landed) >= 5 {
 			break
 		}
 	}
