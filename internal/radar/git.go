@@ -43,7 +43,7 @@ func CollectGit(dir string, now time.Time) (GitTelemetry, error) {
 
 	cutoff := now.Add(-24 * time.Hour).UTC().Format(time.RFC3339)
 	logOut, lerr := gitRun(dir,
-		"log", "--no-merges", "--author=Zane", "-n", "25",
+		"log", "-i", "--no-merges", "--author=Zane", "-n", "25",
 		"--pretty=format:%h\t%cI\t%s\t(%cr)")
 	if lerr == nil {
 		tel.Landed = parseLanded(logOut, cutoff)
@@ -58,7 +58,7 @@ func CollectGit(dir string, now time.Time) (GitTelemetry, error) {
 // Landed = 24h evidence contract; decoration = whole listing (no cutoff; -n 25 cap stays).
 func gitAllMessages(dir string) []string {
 	out, err := gitRun(dir,
-		"log", "--all", "--no-merges", "--author=Zane", "-n", "25",
+		"log", "-i", "--all", "--no-merges", "--author=Zane", "-n", "25",
 		"--pretty=format:%h\t%cI\t%s\t(%cr)")
 	if err != nil {
 		return nil

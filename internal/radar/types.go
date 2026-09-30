@@ -49,12 +49,13 @@ func (l LadderStage) String() string {
 
 // RadarSnapshot is the full orientation state; the frozen --json contract.
 type RadarSnapshot struct {
-	Timestamp  time.Time
-	InFlight   *InFlightTask
-	Evidence   []LandedEvidence
-	DirtyFiles []string
-	Stalled    []StalledDecision
-	Queue      []QueuedItem
+	Timestamp          time.Time
+	InFlight           *InFlightTask
+	InFlightCardStatus string
+	Evidence           []LandedEvidence
+	DirtyFiles         []string
+	Stalled            []StalledDecision
+	Queue              []QueuedItem
 }
 
 // InFlightTask is the single card the operator should be deep in right now.
