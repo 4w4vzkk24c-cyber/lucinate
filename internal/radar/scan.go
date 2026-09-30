@@ -175,11 +175,14 @@ func parseRoadmap(path string, maxLines int) (rows []QueuedItem, doNow bool, err
 	section := "" // "", "donow", "band"
 	for _, ln := range lines {
 		if strings.HasPrefix(ln, "## ") {
-			if strings.HasPrefix(ln, "## Do now") {
+			switch {
+			case strings.HasPrefix(ln, "## Do now"):
 				section = "donow"
 				doNow = true
-			} else {
+			case strings.HasPrefix(ln, "## Ranked"):
 				section = "band"
+			default:
+				section = "" // unrelated ## section: closes Do-now, opens no band capture
 			}
 			continue
 		}
@@ -290,7 +293,7 @@ func Build(home string) (RadarSnapshot, error) {
 	snap.Evidence = append(snap.Evidence, tel.Landed...)
 
 	// Branch evidence beyond the default-branch log (spec r3 F7 ii).
-	branchMsgs := gitAllMessages(filepath.Join(home, filepath.FromSlash(repoRelPath)), now)
+	branchMsgs := gitAllMessages(filepath.Join(home, filepath.FromSlash(repoRelPath)))
 
 	// InFlight: rows[0] exists AND a matching active card is in-progress.
 	if doNow && len(rows) > 0 {

@@ -54,8 +54,9 @@ func CollectGit(dir string, now time.Time) (GitTelemetry, error) {
 // gitAllMessages returns recent non-merge commit subjects reachable from any
 // ref (branch evidence for the r3 F7 decoration rule). Errors degrade to an
 // empty result.
-func gitAllMessages(dir string, now time.Time) []string {
-	cutoff := now.Add(-24 * time.Hour).UTC().Format(time.RFC3339)
+//
+// Landed = 24h evidence contract; decoration = whole listing (no cutoff; -n 25 cap stays).
+func gitAllMessages(dir string) []string {
 	out, err := gitRun(dir,
 		"log", "--all", "--no-merges", "--author=Zane", "-n", "25",
 		"--pretty=format:%h\t%cI\t%s\t(%cr)")
@@ -63,7 +64,7 @@ func gitAllMessages(dir string, now time.Time) []string {
 		return nil
 	}
 	var msgs []string
-	for _, e := range parseLanded(out, cutoff) {
+	for _, e := range parseLanded(out, "") {
 		msgs = append(msgs, e.Message)
 	}
 	return msgs
@@ -115,15 +116,19 @@ func parsePorcelain(out string) []string {
 	return files
 }
 
-// parseLanded converts "%h\t%cI\t%s\t(%cr)" lines into evidence. The 24h
-// window is applied as a post-filter on the committer date: git's --since is
-// a traversal cutoff (it abandons a parent chain at the first too-old commit),
-// which would wrongly drop fresh commits sitting behind an old one. The
+// parseLanded converts "%h\t%cI\t%s\t(%cr)" lines into evidence. A non-empty
+// cutoff applies the 24h window as a post-filter on the committer date: git's
+// --since is a traversal cutoff (it abandons a parent chain at the first
+// too-old commit), which would wrongly drop fresh commits sitting behind an
+// old one. An empty cutoff keeps the whole listing (decoration evidence). The
 // newest five survivors are kept.
 func parseLanded(out string, cutoff string) []LandedEvidence {
-	cut, err := time.Parse(time.RFC3339, cutoff)
-	if err != nil {
-		return nil
+	var cut time.Time
+	if cutoff != "" {
+		var err error
+		if cut, err = time.Parse(time.RFC3339, cutoff); err != nil {
+			return nil
+		}
 	}
 	var landed []LandedEvidence
 	for _, ln := range strings.Split(out, "\n") {
@@ -137,7 +142,7 @@ func parseLanded(out string, cutoff string) []LandedEvidence {
 		}
 		hash, iso, rest := parts[0], parts[1], parts[2]
 		when, perr := time.Parse(time.RFC3339, iso)
-		if perr != nil || when.Before(cut) {
+		if perr != nil || (!cut.IsZero() && when.Before(cut)) {
 			continue
 		}
 		subject, age := rest, ""
