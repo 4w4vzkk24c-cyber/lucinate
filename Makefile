@@ -9,6 +9,14 @@ build:
 build-radar:
 	go build -o radar ./cmd/radar/
 
+.PHONY: build-guard
+build-guard:
+	go build -o guard ./cmd/guard/
+
+.PHONY: build-closer
+build-closer:
+	go build -o closer ./cmd/closer/
+
 .PHONY: build-prod
 build-prod:
 	go build -ldflags "$(LDFLAGS) -s -w" -trimpath -o lucinate .
