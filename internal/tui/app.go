@@ -913,6 +913,11 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 		m.chatModel = newChatModel(m.backend, msg.sessionKey, agentID, msg.agentName, msg.modelID, m.prefs, m.hideInput, connectionLabel(m.activeConn), "", m.brightCursor)
 		m.state = viewChat
 		m.sidebarFocus = false
+		// Reset the sidebar's selecting lock: it was set for the
+		// full-screen modal's loading transition, but the persistent
+		// sidebar must keep rendering the full session list beside
+		// the chat view (not the "Loading <title>..." placeholder).
+		m.sessionsModel.selecting = false
 		m.applyChatLayout()
 		return m, m.chatModel.Init()
 
