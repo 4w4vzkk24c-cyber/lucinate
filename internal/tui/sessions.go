@@ -20,18 +20,19 @@ import (
 
 // sessionItem is a list item for the session browser.
 type sessionItem struct {
-	key         string
-	title       string
-	lastMessage string
-	updatedAt   int64 // Unix millis
-	group       string
+	key          string
+	title        string
+	lastMessage  string
+	updatedAt    int64 // Unix millis
+	group        string
+	hasActiveRun *bool
 }
 
 func (i sessionItem) FilterValue() string {
 	if i.title != "" {
-		return i.title
+		return cleanSessionDisplayKey(i.title)
 	}
-	return i.key
+	return cleanSessionDisplayKey(i.key)
 }
 
 // sessionGroupHeader is a non-selectable list item used as a group separator.
@@ -44,8 +45,8 @@ func (h sessionGroupHeader) FilterValue() string { return "" }
 // sessionDelegate renders each item in the session list.
 type sessionDelegate struct{}
 
-func (d sessionDelegate) Height() int                             { return 2 }
-func (d sessionDelegate) Spacing() int                            { return 1 }
+func (d sessionDelegate) Height() int                             { return 1 }
+func (d sessionDelegate) Spacing() int                            { return 0 }
 func (d sessionDelegate) Update(_ tea.Msg, _ *list.Model) tea.Cmd { return nil }
 
 func (d sessionDelegate) Render(w io.Writer, m list.Model, index int, item list.Item) {
@@ -54,39 +55,52 @@ func (d sessionDelegate) Render(w io.Writer, m list.Model, index int, item list.
 		header := lipgloss.NewStyle().
 			Bold(true).
 			Foreground(accent).
-			Render(fmt.Sprintf("  ── %s ──", i.label))
-		fmt.Fprint(w, header+"\n")
+			Render(fmt.Sprintf("── %s ──", i.label))
+		fmt.Fprint(w, "  "+header+"\n")
 
 	case sessionItem:
-		title := i.title
-		if title == "" {
-			title = i.key
+		displayTitle := i.title
+		if displayTitle == "" {
+			displayTitle = cleanSessionDisplayKey(i.key)
+		} else {
+			displayTitle = cleanSessionDisplayKey(displayTitle)
 		}
 
-		subtitle := i.key
-		if i.lastMessage != "" {
-			preview := i.lastMessage
-			if len(preview) > 60 {
-				preview = preview[:57] + "..."
+		// Available width for title inside list:
+		// item width is m.Width(), subtract cursor prefix (2 chars) and indicator (2 chars)
+		maxTitleLen := m.Width() - 4
+		if maxTitleLen < 6 {
+			maxTitleLen = 6
+		}
+		if len(displayTitle) > maxTitleLen {
+			if maxTitleLen > 3 {
+				displayTitle = displayTitle[:maxTitleLen-1] + "…"
+			} else {
+				displayTitle = displayTitle[:maxTitleLen]
 			}
-			subtitle = i.key + " · " + preview
+		}
+
+		// Activity indicator:
+		// ● (accent/amber) if active, ○ (subtle) if unknown/omitted (*bool == nil), or space if idle (false)
+		indicator := "  "
+		if i.hasActiveRun != nil {
+			if *i.hasActiveRun {
+				indicator = lipgloss.NewStyle().Foreground(accent).Bold(true).Render("● ")
+			}
+		} else {
+			indicator = lipgloss.NewStyle().Foreground(subtle).Render("○ ")
 		}
 
 		if index == m.Index() {
-			str := lipgloss.NewStyle().
+			titleStr := lipgloss.NewStyle().
 				Foreground(accent).
 				Bold(true).
-				Render(fmt.Sprintf("> %s", title))
-			str += "\n" + lipgloss.NewStyle().
-				Foreground(subtle).
-				Render(fmt.Sprintf("  %s", subtitle))
-			fmt.Fprint(w, str)
+				Render(displayTitle)
+			fmt.Fprint(w, "> "+indicator+titleStr)
 		} else {
-			str := fmt.Sprintf("  %s", title)
-			str += "\n" + lipgloss.NewStyle().
-				Foreground(subtle).
-				Render(fmt.Sprintf("  %s", subtitle))
-			fmt.Fprint(w, str)
+			titleStr := lipgloss.NewStyle().
+				Render(displayTitle)
+			fmt.Fprint(w, "  "+indicator+titleStr)
 		}
 	}
 }
@@ -156,6 +170,29 @@ type sessionListEntry struct {
 	LastMessagePreview string `json:"lastMessagePreview"`
 	UpdatedAt          int64  `json:"updatedAt"`
 	Model              string `json:"model"`
+	HasActiveRun       *bool  `json:"hasActiveRun,omitempty"`
+}
+
+// cleanSessionDisplayKey strips internal routing prefixes like agent:<agentId>:
+// generically so session display is clean and unburdened by metadata.
+// The raw key itself is preserved untouched on sessionItem.key.
+func cleanSessionDisplayKey(s string) string {
+	s = strings.TrimSpace(s)
+	// Strip generic agent:<agentId>: prefix
+	if strings.HasPrefix(s, "agent:") {
+		parts := strings.SplitN(s, ":", 3)
+		if len(parts) == 3 {
+			s = parts[2]
+		} else if len(parts) == 2 {
+			s = parts[1]
+		}
+	}
+	// Also strip leading dashboard: if present
+	if strings.HasPrefix(s, "dashboard:") {
+		s = strings.TrimPrefix(s, "dashboard:")
+	}
+	// If it's a UUID, format cleanly or shorten
+	return s
 }
 
 // cleanDerivedTitle strips gateway metadata prefixes from the derived title.
@@ -172,6 +209,7 @@ func cleanDerivedTitle(title string) string {
 	if strings.HasPrefix(title, "{") {
 		title = ""
 	}
+	title = cleanSessionDisplayKey(title)
 	return title
 }
 
@@ -205,11 +243,12 @@ func parseSessionsPayload(raw []byte) ([]sessionItem, error) {
 			title = title[:77] + "..."
 		}
 		items = append(items, sessionItem{
-			key:         entry.Key,
-			title:       title,
-			lastMessage: entry.LastMessagePreview,
-			updatedAt:   entry.UpdatedAt,
-			group:       sessionGroup(entry.Key),
+			key:          entry.Key,
+			title:        title,
+			lastMessage:  entry.LastMessagePreview,
+			updatedAt:    entry.UpdatedAt,
+			group:        sessionGroup(entry.Key),
+			hasActiveRun: entry.HasActiveRun,
 		})
 	}
 	// Sort by updatedAt descending within each group.
@@ -327,7 +366,7 @@ func (m sessionsModel) handleKey(msg tea.KeyPressMsg) (sessionsModel, tea.Cmd) {
 			m.selecting = true
 			m.selectingTitle = item.title
 			if m.selectingTitle == "" {
-				m.selectingTitle = item.key
+				m.selectingTitle = cleanSessionDisplayKey(item.key)
 			}
 			return m, func() tea.Msg {
 				return sessionSelectedMsg{

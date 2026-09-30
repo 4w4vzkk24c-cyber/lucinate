@@ -33,14 +33,14 @@ import (
 const sidebarMinCols = 100
 
 // clampSidebarWidth returns the sidebar pane width for a given terminal
-// width: 30% of the columns, clamped to [24, 40].
+// width: 30% of the columns, clamped to [20, 70].
 func clampSidebarWidth(cols int) int {
 	w := cols * 3 / 10
-	if w < 24 {
-		w = 24
+	if w < 20 {
+		w = 20
 	}
-	if w > 40 {
-		w = 40
+	if w > 70 {
+		w = 70
 	}
 	return w
 }

@@ -121,7 +121,7 @@ func w1Pump(m AppModel, cmd tea.Cmd, wall time.Duration) AppModel {
 }
 
 // W1-AC1 / M3: at >=120 cols both panes render concurrently and the sidebar
-// width is clamp(24, 30% of cols, 40). At base the size goes to chat alone:
+// width is clamp(20, 30% of cols, 70). At base the size goes to chat alone:
 // the sidebar title is absent from the chat render and the list width is
 // never re-derived from the window (still the 30-col fixture pre-size) —
 // the title and upper-clamp assertions are red.
@@ -136,15 +136,23 @@ func TestW1AC1_CompositePanesAt120ColsWithClampedSidebar(t *testing.T) {
 	}
 
 	w := m.sessionsModel.list.Width()
-	if w < 24 || w > 40 {
-		t.Errorf("W1-AC1: sidebar width %d outside clamp(24, 30%% of 120, 40) band [24,40]", w)
+	if w < 20 || w > 70 {
+		t.Errorf("W1-AC1: sidebar width %d outside clamp(20, 30%% of 120, 70) band [20,70]", w)
 	}
 
-	// Upper clamp: 30% of 250 = 75 exceeds the 40 ceiling.
+	// Upper clamp: 30% of 250 = 75 exceeds the 70 ceiling.
 	m250 := w1CompositeApp(t, fb)
 	m250 = w1Deliver(m250, tea.WindowSizeMsg{Width: 250, Height: 40})
-	if got := m250.sessionsModel.list.Width(); got != 40 {
-		t.Errorf("W1-AC1: sidebar width at 250 cols = %d, want upper clamp 40", got)
+	if got := m250.sessionsModel.list.Width(); got != 70 {
+		t.Errorf("W1-AC1: sidebar width at 250 cols = %d, want upper clamp 70", got)
+	}
+
+	// Single-line item height and zero spacing
+	if h := (sessionDelegate{}).Height(); h != 1 {
+		t.Errorf("W1-AC1: sessionDelegate.Height() = %d, want 1 for single-line density", h)
+	}
+	if s := (sessionDelegate{}).Spacing(); s != 0 {
+		t.Errorf("W1-AC1: sessionDelegate.Spacing() = %d, want 0", s)
 	}
 }
 

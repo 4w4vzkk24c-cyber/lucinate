@@ -600,7 +600,7 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 			m.selectModel.setSize(msg.Width, msg.Height)
 		case viewChat:
 			// Wide terminals split the window: the sessions sidebar
-			// takes clamp(24, 30% of cols, 40) beside the chat view.
+			// takes clamp(20, 30% of cols, 70) beside the chat view.
 			// Narrow terminals keep the pre-W1 behavior — chat gets
 			// the full window and sessions stay a full-screen modal.
 			m.applyChatLayout()
