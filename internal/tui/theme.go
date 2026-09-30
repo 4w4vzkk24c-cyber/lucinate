@@ -10,6 +10,7 @@ package tui
 // a crash, never silence (W2-AC2, bans B5/B6).
 
 import (
+	_ "embed"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -21,6 +22,16 @@ import (
 
 	"github.com/lucinate-ai/lucinate/internal/config"
 )
+
+// solarizedDarkStyle is the embedded Solarized Dark glamour JSON —
+// ANSI 256-color indices mapped to the canonical Solarized hues:
+//   Cyan #2aa198→37, Blue #268bd2→32, Yellow #b58900→136,
+//   Orange #cb4b16→166, Green #859900→64, Red #dc322f→160,
+//   Base00 #657b83→246, Base01 #586e75→240, Base02 #073642→236,
+//   Base03 #002b36→234, Magenta #d33682→133
+//
+//go:embed solarized_dark.json
+var solarizedDarkStyle string
 
 // newThemedRenderer builds the markdown renderer from the configured
 // theme at the given wrap width. A non-empty second return is a warning
@@ -57,9 +68,19 @@ func newThemedRenderer(prefs config.Preferences, wrapWidth int) (*glamour.TermRe
 }
 
 // darkRenderer is the explicit fallback (and the default when no style
-// file is configured): the pre-W2 dark standard style.
+// file is configured): the embedded Solarized Dark palette, replacing
+// Glamour's stock "dark" preset so markdown rendering matches the TUI.
 func darkRenderer(wrapWidth int) *glamour.TermRenderer {
-	renderer, _ := glamour.NewTermRenderer(
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithStylesFromJSONBytes([]byte(solarizedDarkStyle)),
+		glamour.WithWordWrap(wrapWidth),
+	)
+	if err == nil {
+		return renderer
+	}
+	// Embedded JSON should never fail; if it somehow does, degrade to the
+	// stock dark preset rather than crashing.
+	renderer, _ = glamour.NewTermRenderer(
 		glamour.WithStandardStyle("dark"),
 		glamour.WithWordWrap(wrapWidth),
 	)
