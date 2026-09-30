@@ -14,19 +14,23 @@
 //	TG3 TestGuardJSONSnapshot             (AC2 --json: Root/Threads/Open/Threshold/Over)
 //	TG4 TestGuardMissingStateDegrade      (AC1: missing/malformed/unreadable => NO THREAD STATE, exit 0)
 //	TG5 TestGuardStateIsHomeDerived       (AC1/M15: two fixture HOMEs => two different states)
+//	TG6 TestGuardReadOnlyHomeInvariant    (AC8/M19 guard arm: HOME tree + state bytes unchanged; --json parses on present and missing state)
 //
 // Hermeticity: every fixture lives under t.TempDir(); HOME is overridden for
 // every binary exec; no test reads the live ~/.openclaw/state store.
 package guard_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -599,4 +603,147 @@ func TestGuardStateIsHomeDerived(t *testing.T) {
 	if got := snapshotString(t, decodeObject(t, "B --json", []byte(jsonB)), "Root"); got != "anchor B" {
 		t.Errorf("HOME B --json Root = %q, want %q", got, "anchor B")
 	}
+}
+
+// ---------------------------------------------------------------- TG6 / AC8 / M19
+
+// homePathList lists every path under home (relative, slash-separated) plus
+// every present entry's size — the observation AC8's guard arm makes before and
+// after a run. A new path anywhere under HOME shows up as an added element; a
+// state-file rewrite shows up (for the state file's own path) or is caught
+// independently by the raw-byte comparison below.
+func homePathList(t *testing.T, home string) []string {
+	t.Helper()
+	var entries []string
+	err := filepath.WalkDir(home, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, rerr := filepath.Rel(home, p)
+		if rerr != nil {
+			return rerr
+		}
+		if rel == "." {
+			return nil
+		}
+		info := ""
+		if i, ierr := d.Info(); ierr == nil {
+			info = fmt.Sprintf("%d", i.Size())
+		}
+		entries = append(entries, filepath.ToSlash(rel)+"|"+info)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking fixture HOME %s: %v", home, err)
+	}
+	sort.Strings(entries)
+	return entries
+}
+
+// TestGuardReadOnlyHomeInvariant is AC8's guard arm (M19's guard-side kill):
+// guard is a read-only renderer, so a full run — default card, --quiet, --json
+// — must leave the fixture HOME byte-identical: the state file's raw bytes
+// unchanged and no new path anywhere under HOME. A state-file rewrite (the
+// explicitly forbidden auto-state-write) or any stray write turns this red.
+//
+// It also pins the --json degrade row (spec required_behaviour, auditor r1):
+// `guard --json` must emit a parseable JSON document on BOTH a present state
+// and a missing state — a machine consumer must never receive non-JSON, so the
+// bare NO THREAD STATE literal must not appear on the --json path.
+func TestGuardReadOnlyHomeInvariant(t *testing.T) {
+	const root = "ship EF suite v1"
+	home := t.TempDir()
+	// Under threshold (2 open / 1 closed): all three run modes exit 0, so the
+	// observation isolates the read-only invariant rather than reconflating it
+	// with the exit-10 fire condition (TG1's job).
+	writeState(t, home, stateDoc(root, openThreads(2, 1)))
+
+	statePath := filepath.Join(home, ".openclaw", "state", "threads.json")
+	beforeBytes, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforePaths := homePathList(t, home)
+
+	// A full run: the default card, the --quiet tripwire, and the --json
+	// snapshot. Each must exit 0 and write nothing anywhere under HOME.
+	for _, args := range [][]string{nil, {"--quiet"}, {"--json"}} {
+		stdout, stderr, code := execGuard(t, home, nil, args...)
+		if code != 0 {
+			t.Errorf("guard %v against a present state exited %d (stderr %q), want 0", args, code, stderr)
+		}
+		if strings.Contains(stdout, "panic") || strings.Contains(stderr, "panic") {
+			t.Errorf("guard %v panicked: stdout %q stderr %q", args, stdout, stderr)
+		}
+
+		afterBytes, err := os.ReadFile(statePath)
+		if err != nil {
+			t.Fatalf("guard %v destroyed the state file: %v", args, err)
+		}
+		if !bytes.Equal(beforeBytes, afterBytes) {
+			t.Errorf("guard %v rewrote the state file — read-only violation (M19):\nbefore %q\nafter  %q", args, beforeBytes, afterBytes)
+		}
+		if got := homePathList(t, home); !slicesEqual(beforePaths, got) {
+			t.Errorf("guard %v changed the HOME tree — a new path or size delta appeared:\nbefore %v\nafter  %v", args, beforePaths, got)
+		}
+	}
+
+	// --json parses as JSON on a present state, and the bare degrade literal is
+	// NOT on the machine path.
+	presentOut, _, presentCode := execGuard(t, home, nil, "--json")
+	if presentCode != 0 {
+		t.Fatalf("--json on a present state exited %d, want 0", presentCode)
+	}
+	if strings.Contains(presentOut, "NO THREAD STATE") {
+		t.Errorf("--json on a present state emitted the bare NO THREAD STATE literal: %q", presentOut)
+	}
+	if _, err := decodeObjectOK(presentOut); err != nil {
+		t.Errorf("--json on a present state is not parseable JSON: %v\nraw: %q", err, presentOut)
+	}
+
+	// --json parses as JSON on a MISSING state (the degrade row): the missing
+	// state is still a machine-readable document, never the bare literal.
+	missingHome := t.TempDir()
+	missingOut, missingErr, missingCode := execGuard(t, missingHome, nil, "--json")
+	if missingCode != 0 {
+		t.Errorf("--json on a missing state exited %d (stderr %q), want 0 (degrade exits 0)", missingCode, missingErr)
+	}
+	if strings.Contains(missingOut, "NO THREAD STATE") {
+		t.Errorf("--json on a missing state emitted the bare NO THREAD STATE literal (must be JSON): %q", missingOut)
+	}
+	if _, err := decodeObjectOK(missingOut); err != nil {
+		t.Errorf("--json on a missing state is not parseable JSON (auditor r1 degrade row): %v\nraw: %q", err, missingOut)
+	}
+
+	// The bare literal remains the DEFAULT/quiet-mode degrade text (the
+	// non-JSON path is unchanged).
+	defaultOut, _, defaultCode := execGuard(t, missingHome, nil)
+	if defaultCode != 0 {
+		t.Errorf("default mode on a missing state exited %d, want 0", defaultCode)
+	}
+	if strings.TrimSpace(ansi.Strip(defaultOut)) != "NO THREAD STATE" {
+		t.Errorf("default mode on a missing state = %q, want the NO THREAD STATE line", defaultOut)
+	}
+}
+
+// decodeObjectOK is decodeObject without the *testing.T dependency, so a
+// non-fatal probe can report the parse error as an assertion failure.
+func decodeObjectOK(raw string) (map[string]json.RawMessage, error) {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
