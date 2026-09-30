@@ -82,13 +82,25 @@ func (d sessionDelegate) Render(w io.Writer, m list.Model, index int, item list.
 
 		// Activity indicator:
 		// ● (accent/amber) if active, ○ (subtle) if unknown/omitted (*bool == nil), or space if idle (false)
+		// Activity indicator with session-type differentiation:
+		// Real agent sessions use circles:  ● active, ○ unknown,   idle
+		// Subagent sessions use diamonds:  ◆ active, ◇ unknown,   idle
+		isSub := strings.Contains(i.key, ":subagent:")
 		indicator := "  "
 		if i.hasActiveRun != nil {
 			if *i.hasActiveRun {
-				indicator = lipgloss.NewStyle().Foreground(accent).Bold(true).Render("● ")
+				if isSub {
+					indicator = lipgloss.NewStyle().Foreground(subtle).Bold(true).Render("◆ ")
+				} else {
+					indicator = lipgloss.NewStyle().Foreground(accent).Bold(true).Render("● ")
+				}
 			}
 		} else {
-			indicator = lipgloss.NewStyle().Foreground(subtle).Render("○ ")
+			if isSub {
+					indicator = lipgloss.NewStyle().Foreground(subtle).Render("◇ ")
+			} else {
+					indicator = lipgloss.NewStyle().Foreground(subtle).Render("○ ")
+			}
 		}
 
 		if index == m.Index() {

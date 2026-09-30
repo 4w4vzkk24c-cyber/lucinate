@@ -63,3 +63,61 @@ func TestSessionDelegate_ActivityIndicatorRender(t *testing.T) {
 		})
 	}
 }
+
+func TestSessionDelegate_SubagentIconRender(t *testing.T) {
+	trueVal := true
+
+	t.Run("subagent active uses diamond", func(t *testing.T) {
+		item := sessionItem{
+				key:          "agent:main:subagent:a68db7ea-0589-4052-a8d7-704cb6b04350",
+				title:        "Subagent Task",
+				hasActiveRun: &trueVal,
+			}
+			var buf strings.Builder
+		d := sessionDelegate{}
+		l := list.New(nil, d, 100, 20)
+		d.Render(&buf, l, 0, item)
+		out := buf.String()
+		if !strings.Contains(out, "◆") {
+			t.Errorf("Subagent active render missing diamond ◆; output:\n%s", out)
+		}
+		if strings.Contains(out, "●") {
+			t.Errorf("Subagent active render should NOT contain circle ●; output:\n%s", out)
+		}
+	})
+
+	t.Run("subagent unknown uses outline diamond", func(t *testing.T) {
+		item := sessionItem{
+				key:          "agent:main:subagent:a68db7ea-0589-4052-a8d7-704cb6b04350",
+				title:        "Subagent Task",
+				hasActiveRun: nil,
+			}
+		var buf strings.Builder
+		d := sessionDelegate{}
+		l := list.New(nil, d, 100, 20)
+		d.Render(&buf, l, 0, item)
+		out := buf.String()
+		if !strings.Contains(out, "◇") {
+			t.Errorf("Subagent unknown render missing outline diamond ◇; output:\n%s", out)
+		}
+	})
+
+	t.Run("real agent active uses circle not diamond", func(t *testing.T) {
+		item := sessionItem{
+				key:          "agent:main:dashboard:ec828e06-b92d-4fbf-8be7-608f664a8f20",
+				title:        "Real Session",
+				hasActiveRun: &trueVal,
+			}
+			var buf strings.Builder
+		d := sessionDelegate{}
+		l := list.New(nil, d, 100, 20)
+		d.Render(&buf, l, 0, item)
+		out := buf.String()
+		if !strings.Contains(out, "●") {
+			t.Errorf("Real agent active render missing circle ●; output:\n%s", out)
+		}
+		if strings.Contains(out, "◆") {
+			t.Errorf("Real agent active render should NOT contain diamond ◆; output:\n%s", out)
+		}
+	})
+}
