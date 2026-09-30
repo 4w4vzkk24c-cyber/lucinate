@@ -335,6 +335,41 @@ func TestParseRoadmapExtractsDoNowAndRanked(t *testing.T) {
 			t.Errorf("rows[%d] wrong: want %v, got %+v", i+1, w, r)
 		}
 	}
+
+	// Audit r1 (minor, band over-capture): an unrelated "## Notes" heading
+	// between Do-now and the ranked band must NOT open a capture band — a
+	// task-shaped line parked under it must never reach the queue pipeline
+	// (Build feeds Queue from rows[1:]).
+	notesFixture := `# Roadmap
+
+## Do now (deep-work WIP = 1)
+
+### → Wire the radar scan loop
+
+- [ ] ` + "`   476`" + ` Wire the radar scan loop — notes · *kanban #1461* · ` + "`in-progress`" + `
+
+## Notes
+
+- [ ] ` + "`   999`" + ` Parked thought under an unrelated section — *kanban #7777* · ` + "`todo`" + `
+
+## Ranked — deep work, ready
+
+### 457 — 1 item
+
+- [ ] ` + "`   457`" + ` Ship the Solarized render pass — *kanban #1388* · ` + "`medium/hours`" + `
+`
+	notesRows, err := ParseRoadmap(writeDelta(t, t.TempDir(), notesFixture), 120)
+	if err != nil {
+		t.Fatalf("ParseRoadmap notes case: %v", err)
+	}
+	for _, r := range notesRows {
+		if normID(r.ID) == "7777" {
+			t.Errorf("task-shaped line under unrelated ## Notes leaked into the queue pipeline: %+v", notesRows)
+		}
+	}
+	if len(notesRows) != 2 || normID(notesRows[0].ID) != "1461" || normID(notesRows[1].ID) != "1388" {
+		t.Errorf("## Notes must contribute no rows; want [1461, 1388], got %+v", notesRows)
+	}
 }
 
 func TestParseRoadmapIgnoresLinesPast120(t *testing.T) {
@@ -873,6 +908,36 @@ func TestBuildStageDecoration(t *testing.T) {
 	}
 }
 
+// TestBuildStageDecorationStaleBranchCommit pins spec row 11(ii) with no
+// recency bound — audit r1 finding 1 (F7(ii) window drift). The ONLY commit
+// referencing the card id is dated 3 days ago, outside the 24h window the
+// implementation borrows from the Landed query, and must still decorate
+// StageBuild/50. RED at 6b074b5 by design: branch evidence runs through the
+// 24h cutoff, so the stale commit is dropped and StageDesign/15 leaks out.
+// The builder removes that bound to turn this green.
+func TestBuildStageDecorationStaleBranchCommit(t *testing.T) {
+	home := homeFixture(t, []cardSpec{
+		{id: "1461", title: "Wire the radar scan loop", status: "in-progress", priority: "high"},
+	}, deltaFixture)
+	repo := filepath.Join(home, "Repositories", "kanban-zed")
+	runGit(t, home, repo, "checkout", "-b", "feature/scan-loop")
+	stale := time.Now().Add(-72 * time.Hour).Format(time.RFC3339)
+	cmd := exec.Command("git", "commit", "--allow-empty", "-m", "wip(1461): scan loop on branch")
+	cmd.Dir = repo
+	cmd.Env = append(gitEnv(home), "GIT_AUTHOR_DATE="+stale, "GIT_COMMITTER_DATE="+stale)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("stale branch commit: %v: %s", err, out)
+	}
+	runGit(t, home, repo, "checkout", "main")
+	snap, err := Build(home)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if snap.InFlight == nil || snap.InFlight.Stage != StageBuild || snap.InFlight.ProgressPct != 50 {
+		t.Errorf("stale (3-day-old) branch evidence must yield StageBuild/50 per spec 11(ii), got %+v", snap.InFlight)
+	}
+}
+
 func TestBuildDirtyAnchorAndReEntryCmd(t *testing.T) {
 	home := homeFixture(t, []cardSpec{
 		{id: "1461", title: "Wire the radar scan loop", status: "in-progress", priority: "high"},
@@ -902,10 +967,12 @@ func TestBuildDirtyAnchorAndReEntryCmd(t *testing.T) {
 	if !strings.Contains(anchor, "foo.go:3") {
 		t.Fatalf("dirty anchor must be path:line with the added line 3, got %q", anchor)
 	}
-	// r3 F7: ReEntryCmd is the fixed form "go test ./<dir-of-anchor>/ -count=1"
-	// derived from whatever anchor the implementation observed.
-	dir := filepath.Dir(strings.SplitN(anchor, ":", 2)[0])
-	wantCmd := fmt.Sprintf("go test ./%s/ -count=1", dir)
+	// r3 F7: ReEntryCmd is the fixed form "go test ./<dir-of-anchor>/ -count=1".
+	// Audit r1 (minor): the expected directory is the fixture's known constant,
+	// not a value re-derived from the anchor under test — a wrong-but-self-
+	// consistent anchor path can no longer pass this assertion.
+	const wantDir = "cmd" // known fixture layout: the dirty file is <repo>/cmd/foo.go
+	wantCmd := fmt.Sprintf("go test ./%s/ -count=1", wantDir)
 	if snap.InFlight.ReEntryCmd != wantCmd {
 		t.Errorf("ReEntryCmd fixed form: want %q, got %q", wantCmd, snap.InFlight.ReEntryCmd)
 	}
@@ -1009,25 +1076,29 @@ func TestSuitePresenceAndNoSkips(t *testing.T) {
 		}
 	}
 
+	// Audit r1 (Important, M8 hole): the self-scan is restored. The needles
+	// are built by concatenation so this scanner's own source never contains
+	// the contiguous byte sequence it searches for — and every .go in the
+	// package is scanned, radar_test.go included.
+	skipNeedle := "t." + "Skip("
+	shortNeedle := "testing." + "Short"
 	entries, err := os.ReadDir(filepath.Join(root, "internal", "radar"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, e := range entries {
-		// radar_test.go is the scanner: its own assertion literals ("t.Skip",
-		// "testing.Short") self-match. Scan every other .go in the package.
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || e.Name() == "radar_test.go" {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
 			continue
 		}
 		src, err := os.ReadFile(filepath.Join(root, "internal", "radar", e.Name()))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(string(src), "t.Skip") {
-			t.Errorf("%s uses t.Skip — skipped radar tests are forbidden (AC7)", e.Name())
+		if strings.Contains(string(src), skipNeedle) {
+			t.Errorf("%s contains a skip call — skipped radar tests are forbidden (AC7)", e.Name())
 		}
-		if strings.Contains(string(src), "testing.Short") {
-			t.Errorf("%s gates tests on testing.Short — silent exclusion is forbidden (AC7)", e.Name())
+		if strings.Contains(string(src), shortNeedle) {
+			t.Errorf("%s gates tests on a short-mode guard — silent exclusion is forbidden (AC7)", e.Name())
 		}
 	}
 }
@@ -1040,18 +1111,20 @@ func TestSuiteHermeticity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Audit r1 (Important, M8 hole): the self-scan is restored here too; the
+	// needle is split so this file's own source cannot match it, and every
+	// .go in the package is scanned, radar_test.go included.
+	usersNeedle := "/Use" + "rs/"
 	for _, e := range entries {
-		// radar_test.go is the scanner: its own "/Users/" assertion literal
-		// self-matches. Scan every other .go in the package.
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || e.Name() == "radar_test.go" {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
 			continue
 		}
 		src, err := os.ReadFile(filepath.Join(root, "internal", "radar", e.Name()))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(string(src), "/Users/") {
-			t.Errorf("%s contains an absolute /Users literal — store paths must resolve via os.UserHomeDir()", e.Name())
+		if strings.Contains(string(src), usersNeedle) {
+			t.Errorf("%s contains an absolute home-path literal — store paths must resolve via os.UserHomeDir()", e.Name())
 		}
 	}
 }
