@@ -218,6 +218,9 @@ type AppModel struct {
 	// driven by sessions.changed events. Pointer so value-copied models
 	// and in-flight commands share one sequence. Initialized in NewApp.
 	sidebarRefresh *sidebarDebouncer
+
+	// showHelp toggles the hotkey help overlay (bound to '?').
+	showHelp bool
 }
 
 // NewApp creates the root application model.
@@ -1009,6 +1012,12 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 		return m.TriggerAction(msg.ID)
 
 	case tea.KeyPressMsg:
+		// Any key closes the help overlay — checked before all other
+		// bindings so nothing leaks through while the cheat-sheet is up.
+		if m.showHelp {
+			m.showHelp = false
+			return m, nil
+		}
 		switch msg.String() {
 		case "ctrl+c":
 			// requestExit routes per host: the CLI gets tea.Quit, an
@@ -1055,6 +1064,11 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 				m.sessionsModel.rebuildList()
 				return m, nil
 			}
+		case "?":
+			// Hotkey help overlay — toggles a centered cheat-sheet on
+			// top of whatever view is active. Any key closes it.
+			m.showHelp = !m.showHelp
+			return m, nil
 		case "q":
 			// q quits on navigation screens, mirroring the CLI's bubbles
 			// list binding — but only on a host that delegates exit to us
@@ -1503,5 +1517,55 @@ func (m AppModel) View() tea.View {
 	}
 	v.KeyboardEnhancements.ReportEventTypes = true
 	v.ReportFocus = true
+
+	// Hotkey help overlay: when showHelp is toggled, compose a centered
+	// cheat-sheet on top of whatever view is rendered beneath it.
+	if m.showHelp {
+		v = tea.NewView(m.renderHelpOverlay(v.Content))
+	}
+
 	return v
+}
+
+// renderHelpOverlay composes a centered hotkey cheat-sheet on top of the
+// underlying view content.
+func (m AppModel) renderHelpOverlay(underlying string) string {
+	var b strings.Builder
+	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(accent).Render("  Hotkeys  "))
+	b.WriteString("\n\n")
+
+	keys := [][2]string{
+		{"ctrl+j / ctrl+k", "Next / previous session"},
+		{"ctrl+s", "Toggle sidebar focus"},
+		{"ctrl+h", "Hide/show subagents"},
+		{"?", "This help overlay"},
+		{"esc", "Back to chat (from sidebar)"},
+		{"enter", "Select highlighted session"},
+		{"n", "New session (sidebar focused)"},
+		{"h", "Hide/show subagents (sidebar focused)"},
+		{"ctrl+c", "Exit"},
+	}
+	for _, k := range keys {
+		b.WriteString("  ")
+		b.WriteString(lipgloss.NewStyle().Bold(true).Render(k[0]))
+		b.WriteString(strings.Repeat(" ", maxInt(0, 28-lipgloss.Width(k[0]))))
+		b.WriteString(k[1])
+		b.WriteString("\n")
+	}
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(accent).
+		Padding(1, 2).
+		Render(b.String())
+
+	return lipgloss.Place(m.width, m.height,
+		lipgloss.Center, lipgloss.Center, box)
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
