@@ -93,16 +93,24 @@ func RenderQuiet(open int) (string, int) {
 	return fmt.Sprintf("threads %d/%d — under threshold", open, Threshold), 0
 }
 
-// snapshot is the --json contract: {Root, Threads, Open, Threshold, Over}.
+// snapshot is the --json contract: {Root, Threads, Open, Threshold, Over,
+// Degraded}. Degraded is additive (1610): a top-level boolean true iff the
+// state is missing/malformed/zero, so a machine consumer distinguishes the
+// disclosed degrade from a genuinely empty thread list. Every pre-existing
+// field keeps its name and meaning.
 type snapshot struct {
 	Root      string   `json:"Root"`
 	Threads   []Thread `json:"Threads"`
 	Open      int      `json:"Open"`
 	Threshold int      `json:"Threshold"`
 	Over      bool     `json:"Over"`
+	Degraded  bool     `json:"Degraded"`
 }
 
-// RenderJSON marshals the --json snapshot with Over == (Open >= Threshold).
+// RenderJSON marshals the --json snapshot with Over == (Open >= Threshold) and
+// Degraded == (no root and no threads): ReadState yields the zero ThreadState
+// for a missing, malformed, or unreadable state file, so the zero value is the
+// degrade. Guard stays read-only.
 func RenderJSON(s ThreadState) ([]byte, error) {
 	open := OpenCount(s)
 	threads := s.Threads
@@ -115,5 +123,6 @@ func RenderJSON(s ThreadState) ([]byte, error) {
 		Open:      open,
 		Threshold: Threshold,
 		Over:      open >= Threshold,
+		Degraded:  s.Root == "" && len(s.Threads) == 0,
 	})
 }
