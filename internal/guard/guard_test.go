@@ -15,6 +15,7 @@
 //	TG4 TestGuardMissingStateDegrade      (AC1: missing/malformed/unreadable => NO THREAD STATE, exit 0)
 //	TG5 TestGuardStateIsHomeDerived       (AC1/M15: two fixture HOMEs => two different states)
 //	TG6 TestGuardReadOnlyHomeInvariant    (AC8/M19 guard arm: HOME tree + state bytes unchanged; --json parses on present and missing state)
+//	TG7 TestGuardJSONDegradeIndicated     (AC14/M22: --json carries a top-level degrade indication; true on missing/malformed, false on valid; bare literal absent from the --json path)
 //
 // Hermeticity: every fixture lives under t.TempDir(); HOME is overridden for
 // every binary exec; no test reads the live ~/.openclaw/state store.
@@ -746,4 +747,77 @@ func slicesEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// ---------------------------------------------------------------- TG7 / AC14 / M22
+
+// TestGuardJSONDegradeIndicated pins AC14 (the 1607 r2 auditor's residual item 3):
+// the --json document must carry an explicit, machine-readable degrade
+// indication — a top-level boolean true iff the state is missing/malformed/zero
+// — IN ADDITION to the existing empty-field shape, so a consumer distinguishes
+// a degrade from a genuinely empty thread list. On a valid populated state the
+// indication is false. The bare "NO THREAD STATE" literal stays the default/
+// --quiet text and must never appear on the --json path.
+//
+// Red-first by design: at base 1610 render.go's snapshot carries no indication
+// field, so the emitted document omits it and the presence check below fails.
+// The seam is a black-box JSON field (the same shape every other guard test
+// observes), so the suite compiles and this test reddens at its assertion — it
+// is not a compile error. quorum-builder adds the field; the suite then greens.
+func TestGuardJSONDegradeIndicated(t *testing.T) {
+	// The field is named by required_behaviour row 4 as "Degraded"; resolve the
+	// key case-insensitively so a casing choice cannot manufacture a red.
+	const field = "Degraded"
+
+	validHome := t.TempDir()
+	writeState(t, validHome, stateDoc("ship EF suite v1", openThreads(2, 1)))
+
+	missingHome := t.TempDir() // no state file at all
+	malformedHome := t.TempDir()
+	writeState(t, malformedHome, `{"root": "half a doc", "threads": [`)
+
+	for _, tc := range []struct {
+		name    string
+		home    string
+		want    bool
+		degrade bool
+	}{
+		{name: "missing state indicates the degrade", home: missingHome, want: true, degrade: true},
+		{name: "malformed state indicates the degrade", home: malformedHome, want: true, degrade: true},
+		{name: "valid state does not indicate", home: validHome, want: false, degrade: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr, code := execGuard(t, tc.home, nil, "--json")
+			if code != 0 {
+				t.Fatalf("--json exit %d (stderr %q), want 0 (degrade exits 0)", code, stderr)
+			}
+			top := decodeObject(t, "--json output", []byte(stdout))
+
+			raw, ok := jsonKey(top, field)
+			if !ok {
+				t.Fatalf("--json snapshot carries no %q indication (AC14/M22: the degrade must be machine-readable); keys: %v", field, keysOf(top))
+			}
+			var got bool
+			if err := json.Unmarshal(raw, &got); err != nil {
+				t.Fatalf("--json %s is not a bool: %v", field, err)
+			}
+			if got != tc.want {
+				t.Errorf("--json %s = %v, want %v", field, got, tc.want)
+			}
+
+			// The bare literal is the default/--quiet text only: it must not leak
+			// onto the --json path in any of the three cases.
+			if strings.Contains(stdout, "NO THREAD STATE") {
+				t.Errorf("--json emitted the bare NO THREAD STATE literal (must be JSON): %q", stdout)
+			}
+
+			// The indication is additive: the existing field shape is preserved
+			// alongside it (empty on degrade, populated on a valid state).
+			if tc.degrade {
+				if got := snapshotString(t, top, "Root"); got != "" {
+					t.Errorf("degrade --json Root = %q, want %q (existing empty-field shape preserved)", got, "")
+				}
+			}
+		})
+	}
 }
