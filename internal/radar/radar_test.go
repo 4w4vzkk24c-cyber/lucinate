@@ -31,6 +31,16 @@ package radar
 // InFlightCardStatus "in-progress", (b) is non-nil with card status "todo",
 // (c) is non-nil and row-sourced with "" - RED-then-GREEN with the builder's
 // changes. The other 20 test functions stay byte-untouched.
+//
+// 1609 v1.2 kill-map additions (card 1609, spec r3):
+//	M20 -> TestRadarTelemetryFollowsCwd (telemetry re-hardcoded to the store: the cwd markers vanish)
+//	M21 -> TestRadarTelemetryFollowsCwd (card scan moved to cwd: Stalled empty, HOME card title lost)
+//
+// 1609 v1.2 amendment (spec row 6, authoritative): the six cwd-broken
+// fixtures below gain t.Chdir(<their store repo>) immediately before each
+// Build(home) invocation - assertions unchanged. TestBuildFilemodeOnlyDirtyTree
+// is cwd-SAFE and deliberately left unamended; TestBuildStalledRules stays
+// green without t.Chdir (its assertions are cwd-independent).
 
 import (
 	"encoding/json"
@@ -203,6 +213,36 @@ func homeFixture(t *testing.T, cards []cardSpec, delta string) string {
 	return home
 }
 
+// cwdRepoFixture builds a SECOND, independent git repo (its own t.TempDir)
+// whose identity is structurally distinct from any HOME store: a tracked
+// file named cwd_only.go, a fresh default-branch commit whose message
+// references 1461 (the Landed evidence that alone decorates StageVerify),
+// and a one-line dirtying of cwd_only.go so the re-entry anchor points at
+// line 3. Returns the repo root; the caller t.Chdir's into it.
+func cwdRepoFixture(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	repo := filepath.Join(home, "cwd-repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, home, repo, "init", "-b", "main")
+	runGit(t, home, repo, "config", "user.name", "Zane")
+	runGit(t, home, repo, "config", "user.email", "zane@fixture.invalid")
+	if err := os.WriteFile(filepath.Join(repo, "cwd_only.go"), []byte("alpha\nbeta\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, home, repo, "add", "-A")
+	runGit(t, home, repo, "commit", "-m", "seed: cwd fixture baseline (no card refs)")
+	runGit(t, home, repo, "commit", "--allow-empty", "-m", "feat(1461): cwd-side work")
+	// Dirty the tracked file: the added line lands on line 3, so the anchor is
+	// cwd_only.go:3 (an untracked file would yield a zero-hunk, empty anchor).
+	if err := os.WriteFile(filepath.Join(repo, "cwd_only.go"), []byte("alpha\nbeta\ngamma\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return repo
+}
+
 func execRadar(t *testing.T, home string, args ...string) (string, string, int) {
 	t.Helper()
 	bin, err := buildRadarBin()
@@ -211,6 +251,11 @@ func execRadar(t *testing.T, home string, args ...string) (string, string, int) 
 	}
 	cmd := exec.Command(bin, args...)
 	cmd.Env = append(os.Environ(), "HOME="+home)
+	// 1609 v1.2 hermeticity: run in a fresh non-repo dir so the spawned binary
+	// cannot read the live checkout via cwd telemetry. git status fails there,
+	// telemetry degrades to zero deterministically, and the binary-exec tests
+	// stay operator-state-independent.
+	cmd.Dir = t.TempDir()
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -636,6 +681,10 @@ func TestRenderFullSolarizedSGRSubset(t *testing.T) {
 		t.Fatalf("cmd/radar not buildable: %v", err)
 	}
 	cmd := exec.Command(bin)
+	// 1609 v1.2 hermeticity: this site builds its own command (no execRadar),
+	// so it needs its own non-repo cmd.Dir or cwd telemetry would read the
+	// live checkout.
+	cmd.Dir = t.TempDir()
 	cmd.Env = append(os.Environ(),
 		"HOME="+home,
 		"CLICOLOR_FORCE=1",
@@ -767,6 +816,7 @@ func TestBuildInFlightContract(t *testing.T) {
 	home := homeFixture(t, []cardSpec{
 		{id: "1461", title: "Wire the radar scan loop", status: "in-progress", priority: "high"},
 	}, deltaFixture)
+	t.Chdir(filepath.Join(home, "Repositories", "kanban-zed"))
 	snap, err := Build(home)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -814,6 +864,7 @@ func TestBuildInFlightContract(t *testing.T) {
 	// the mismatch surfaces via InFlightCardStatus ("todo"). RED at base: v1
 	// leaves InFlight nil here.
 	home = homeFixture(t, []cardSpec{{id: "1461", title: "Wire the radar scan loop", status: "todo", priority: "high"}}, deltaFixture)
+	t.Chdir(filepath.Join(home, "Repositories", "kanban-zed"))
 	snap, err = Build(home)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -841,6 +892,7 @@ func TestBuildInFlightContract(t *testing.T) {
 	// to). RED at base: v1 leaves InFlight nil here.
 	orphan := strings.Replace(deltaFixture, "*kanban #1461*", "*kanban #9999*", 1)
 	home = homeFixture(t, []cardSpec{{id: "1461", title: "Wire the radar scan loop", status: "in-progress", priority: "high"}}, orphan)
+	t.Chdir(filepath.Join(home, "Repositories", "kanban-zed"))
 	snap, err = Build(home)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -936,6 +988,7 @@ func TestBuildStageDecoration(t *testing.T) {
 	}, deltaFixture)
 	repo := filepath.Join(home, "Repositories", "kanban-zed")
 	runGit(t, home, repo, "commit", "--allow-empty", "-m", "feat(1461): wire the scan loop")
+	t.Chdir(repo)
 	snap, err := Build(home)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -952,6 +1005,7 @@ func TestBuildStageDecoration(t *testing.T) {
 	runGit(t, home, repo, "checkout", "-b", "feature/scan-loop")
 	runGit(t, home, repo, "commit", "--allow-empty", "-m", "wip(1461): scan loop on branch")
 	runGit(t, home, repo, "checkout", "main")
+	t.Chdir(repo)
 	snap, err = Build(home)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -986,6 +1040,7 @@ func TestBuildStageDecorationStaleBranchCommit(t *testing.T) {
 		t.Fatalf("stale branch commit: %v: %s", err, out)
 	}
 	runGit(t, home, repo, "checkout", "main")
+	t.Chdir(repo)
 	snap, err := Build(home)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -1024,6 +1079,7 @@ func TestBuildStageDecorationDeepHistoryBranchCommit(t *testing.T) {
 		}
 	}
 	runGit(t, home, repo, "checkout", "main")
+	t.Chdir(repo)
 	snap, err := Build(home)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -1051,6 +1107,7 @@ func TestBuildDirtyAnchorAndReEntryCmd(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	t.Chdir(repo)
 	snap, err := Build(home)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -1682,6 +1739,7 @@ func TestBuildDoNowFallbackCardStatus(t *testing.T) {
 	home := homeFixture(t, []cardSpec{
 		{id: "1461", title: "Wire the radar scan loop", status: "backlog", priority: "high"},
 	}, deltaFixture)
+	t.Chdir(filepath.Join(home, "Repositories", "kanban-zed"))
 	snap, err := Build(home)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -1728,6 +1786,7 @@ func TestBuildDoNowFallbackCardStatus(t *testing.T) {
 	home = homeFixture(t, []cardSpec{
 		{id: "1461", title: "Wire the radar scan loop", status: "in-progress", priority: "high"},
 	}, deltaFixture)
+	t.Chdir(filepath.Join(home, "Repositories", "kanban-zed"))
 	snap, err = Build(home)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -1791,5 +1850,98 @@ func TestBuildDoNowFallbackCardStatus(t *testing.T) {
 	}
 	if !strings.Contains(string(out), `"Queue":[]`) {
 		t.Errorf("band-only: --json must keep the literal [] for Queue (never null), got %s", out)
+	}
+}
+
+// ----------------------------------------------------------------
+// 1609 v1.2: AC12/AC13 RED pin (cwd telemetry; mutations M20/M21)
+// ----------------------------------------------------------------
+
+// TestRadarTelemetryFollowsCwd pins AC12 + AC13 in one function: after the
+// process cwd is set to an INDEPENDENT repo whose dirty file is cwd_only.go
+// and whose fresh default-branch commit references 1461, Build's git
+// telemetry must describe the cwd repo (DirtyFiles, the ReEntryFile anchor,
+// and the Landed evidence that decorates StageVerify) while the card scan
+// still reads the HOME store (InFlight.Title + the blocked 1101 in Stalled).
+//
+// RED at fee1c44: v1.1 hardcodes telemetry to home/Repositories/kanban-zed,
+// so this reports the store's store_only.go and a StageDesign/15 leak.
+//
+// Negative-lookahead-safe: a POSITIVE cwd marker (cwd_only.go present) is
+// paired with a NEGATIVE store marker (store_only.go absent) over two
+// structurally distinct filenames, so no single substring can satisfy the
+// pin vacuously. M20 (telemetry re-hardcoded to the store) reddens exactly
+// the cwd clauses; M21 (card scan moved to cwd) reddens the Stalled/title
+// clauses.
+func TestRadarTelemetryFollowsCwd(t *testing.T) {
+	// HOME fixture: the card store. Card 1461 in-progress drives InFlight;
+	// card 1101 blocked is the card-scan probe. The store tree is dirtied
+	// with store_only.go so a store-telemetry regression is observable.
+	home := homeFixture(t, []cardSpec{
+		{id: "1461", title: "Wire the radar scan loop", status: "in-progress", priority: "high"},
+		{id: "1101", title: "Gate the manual orders", status: "blocked", priority: "high"},
+	}, deltaFixture)
+	storeRepo := filepath.Join(home, "Repositories", "kanban-zed")
+	if err := os.WriteFile(filepath.Join(storeRepo, "store_only.go"), []byte("store\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second, independent repo; its root becomes the process working dir.
+	cwdRepo := cwdRepoFixture(t)
+	t.Chdir(cwdRepo)
+
+	snap, err := Build(home)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	// AC12 (telemetry followed cwd): the dirty list, the re-entry anchor, and
+	// the Landed evidence that decorates Stage all come from the cwd repo.
+	var hasCwd, hasStore bool
+	for _, f := range snap.DirtyFiles {
+		if strings.Contains(f, "cwd_only.go") {
+			hasCwd = true
+		}
+		if strings.Contains(f, "store_only.go") {
+			hasStore = true
+		}
+	}
+	if !hasCwd {
+		t.Errorf("AC12: DirtyFiles must describe the cwd repo (cwd_only.go), got %v", snap.DirtyFiles)
+	}
+	if hasStore {
+		t.Errorf("AC12: DirtyFiles must NOT describe the store (store_only.go) under cwd telemetry, got %v", snap.DirtyFiles)
+	}
+	if len(snap.DirtyFiles) == 0 {
+		t.Errorf("AC12: DirtyFiles must be non-empty - the cwd tree, not the store, is described")
+	}
+	if snap.InFlight == nil {
+		t.Fatalf("AC12/AC13: InFlight must be present for the HOME in-progress card 1461")
+	}
+	if snap.InFlight.Stage != StageVerify || snap.InFlight.ProgressPct != 70 {
+		t.Errorf("AC12: Stage must be StageVerify/70 from the cwd repo's fresh commit referencing 1461, got %v/%d", snap.InFlight.Stage, snap.InFlight.ProgressPct)
+	}
+	if !strings.Contains(snap.InFlight.ReEntryFile, "cwd_only.go:") {
+		t.Errorf("AC12: ReEntryFile must anchor to the cwd tree (contains cwd_only.go:), got %q", snap.InFlight.ReEntryFile)
+	}
+
+	// AC13 (the card scan did NOT move): the card-sourced fields still come
+	// from the HOME store; a cwd card scan finds no tasks/ and yields zero.
+	if snap.InFlight.Title != "Wire the radar scan loop" {
+		t.Errorf("AC13: InFlight.Title must come from the HOME card 1461, got %q", snap.InFlight.Title)
+	}
+	if len(snap.Stalled) != 1 || normID(snap.Stalled[0].ID) != "1101" {
+		t.Errorf("AC13: card scan must still read the HOME store (exactly blocked 1101 in Stalled), got %+v", snap.Stalled)
+	}
+
+	// AC12 store-fallback clause + seam restore: with os.Getwd failing,
+	// telemetryDir must return the store path exactly. The seam is restored
+	// via t.Cleanup so no later order-dependent test inherits a broken getwd.
+	// (Compile note: getwd/telemetryDir are the builder's step-2 symbols; this
+	// assertion is red-until-then by design, per 1602's RED-first convention.)
+	t.Cleanup(func() { getwd = os.Getwd })
+	getwd = func() (string, error) { return "", errors.New("getwd forced failure (1609 test seam)") }
+	if got, want := telemetryDir(home), filepath.Join(home, filepath.FromSlash(repoRelPath)); got != want {
+		t.Errorf("AC12 fallback: telemetryDir with Getwd error must return the store path exactly, want %q, got %q", want, got)
 	}
 }
