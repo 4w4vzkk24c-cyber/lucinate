@@ -35,6 +35,8 @@ package radar
 // 1609 v1.2 kill-map additions (card 1609, spec r3):
 //	M20 -> TestRadarTelemetryFollowsCwd (telemetry re-hardcoded to the store: the cwd markers vanish)
 //	M21 -> TestRadarTelemetryFollowsCwd (card scan moved to cwd: Stalled empty, HOME card title lost)
+//	M22 -> TestCLIBinaryTelemetryFollowsCmdDir (execRadar's cmd.Dir removed: the binary inherits
+//	       the clean go-test cwd and reports no bin_only.go marker)
 //
 // 1609 v1.2 amendment (spec row 6, authoritative): the cwd-broken fixtures
 // below gain t.Chdir(<their store repo>) immediately before each Build(home)
@@ -245,6 +247,35 @@ func cwdRepoFixture(t *testing.T) string {
 	return repo
 }
 
+// binOnlyRepoFixture builds a deterministic, hermetic git repo whose sole
+// tracked file is the distinctly named bin_only.go, dirtied after its seed
+// commit, so `git status --porcelain` reports exactly that marker. execRadar
+// runs the spawned binary here: the binary's telemetry must describe the cwd
+// it was handed, and no other fixture in the suite can satisfy the bin_only.go
+// needle vacuously.
+func binOnlyRepoFixture(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	repo := filepath.Join(home, "bin-repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, home, repo, "init", "-b", "main")
+	runGit(t, home, repo, "config", "user.name", "Zane")
+	runGit(t, home, repo, "config", "user.email", "zane@fixture.invalid")
+	if err := os.WriteFile(filepath.Join(repo, "bin_only.go"), []byte("alpha\nbeta\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, home, repo, "add", "-A")
+	runGit(t, home, repo, "commit", "-m", "seed: bin-only fixture baseline (no card refs)")
+	// Dirty the tracked file: the added line lands on line 3, so the anchor is
+	// bin_only.go:3 (an untracked file would yield a zero-hunk, empty anchor).
+	if err := os.WriteFile(filepath.Join(repo, "bin_only.go"), []byte("alpha\nbeta\ngamma\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return repo
+}
+
 func execRadar(t *testing.T, home string, args ...string) (string, string, int) {
 	t.Helper()
 	bin, err := buildRadarBin()
@@ -253,11 +284,13 @@ func execRadar(t *testing.T, home string, args ...string) (string, string, int) 
 	}
 	cmd := exec.Command(bin, args...)
 	cmd.Env = append(os.Environ(), "HOME="+home)
-	// 1609 v1.2 hermeticity: run in a fresh non-repo dir so the spawned binary
-	// cannot read the live checkout via cwd telemetry. git status fails there,
-	// telemetry degrades to zero deterministically, and the binary-exec tests
-	// stay operator-state-independent.
-	cmd.Dir = t.TempDir()
+	// 1609 v1.2 hermeticity, now load-bearing: run the spawned binary inside a
+	// fixture repo carrying the distinctly named dirty file bin_only.go, so its
+	// cwd telemetry describes that fixture deterministically and stays
+	// operator-state-independent. TestCLIBinaryTelemetryFollowsCmdDir is the
+	// pin: drop this line and the binary inherits the go-test cwd (internal/
+	// radar, a clean package dir), reports no bin_only.go, and reddens.
+	cmd.Dir = binOnlyRepoFixture(t)
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -808,6 +841,53 @@ func TestCLIDegradeExitZero(t *testing.T) {
 	var snap RadarSnapshot
 	if err := json.Unmarshal([]byte(stdout), &snap); err != nil {
 		t.Errorf("--json degrade output must still be a RadarSnapshot: %v", err)
+	}
+}
+
+// TestCLIBinaryTelemetryFollowsCmdDir pins the 1609 v1.2 hermeticity fix at
+// the binary boundary: execRadar's cmd.Dir points at a fixture repo carrying
+// the distinctly named dirty file bin_only.go, and the spawned radar must
+// report THAT marker — i.e. its telemetry describes the cwd it was given, not
+// an ambient checkout.
+//
+// GREEN at head: cmd.Dir = binOnlyRepoFixture -> git status there yields
+// bin_only.go -> the marker appears in the --json DirtyFiles and in the full
+// card's WORKING TREE line.
+//
+// RED under the mutant that removes cmd.Dir: the binary inherits the go-test
+// cwd (internal/radar, a clean package dir), reports zero dirty files, and
+// both assertions below fail. That green-at-head -> red-under-mutant
+// transition is the pin.
+func TestCLIBinaryTelemetryFollowsCmdDir(t *testing.T) {
+	home := homeFixture(t, []cardSpec{
+		{id: "1461", title: "Wire the radar scan loop", status: "in-progress", priority: "high"},
+	}, deltaFixture)
+
+	stdout, _, code := execRadar(t, home, "--json")
+	if code != 0 {
+		t.Fatalf("--json exit %d", code)
+	}
+	var snap RadarSnapshot
+	if err := json.Unmarshal([]byte(stdout), &snap); err != nil {
+		t.Fatalf("--json output does not unmarshal: %v (%q)", err, stdout)
+	}
+	var hasMarker bool
+	for _, f := range snap.DirtyFiles {
+		if strings.Contains(f, "bin_only.go") {
+			hasMarker = true
+		}
+	}
+	if !hasMarker {
+		t.Errorf("binary telemetry must follow cmd.Dir: --json DirtyFiles must report the fixture marker bin_only.go, got %v", snap.DirtyFiles)
+	}
+
+	// The full card surfaces the same cwd marker in its WORKING TREE line.
+	full, _, code := execRadar(t, home)
+	if code != 0 {
+		t.Fatalf("default mode exit %d", code)
+	}
+	if !strings.Contains(sgrStrip(full), "bin_only.go") {
+		t.Errorf("full card must render the cwd fixture's dirty marker bin_only.go, got %q", full)
 	}
 }
 
