@@ -33,6 +33,14 @@ import (
 //go:embed solarized_dark.json
 var solarizedDarkStyle string
 
+// solarizedLightStyle is the embedded Solarized Light glamour JSON — the
+// same element mapping as the dark style, inverted: Base3 document text
+// #657b83 on Base2 code surfaces #eee8d5. Without this the light terminal
+// inherited the dark style's Base02 #073642 code backgrounds, which read
+// as near-black blocks on a cream page.
+//go:embed solarized_light.json
+var solarizedLightStyle string
+
 // newThemedRenderer builds the markdown renderer from the configured
 // theme at the given wrap width. A non-empty second return is a warning
 // the caller must surface (chatModel appends it to notifications) — the
@@ -48,23 +56,70 @@ func newThemedRenderer(prefs config.Preferences, wrapWidth int) (*glamour.TermRe
 		}
 	}
 	if stylePath == "" {
+		// No user style file: the embedded palette follows theme.mode, the
+		// same axis paletteForMode uses for the TUI chrome, so the transcript
+		// and the chrome agree in light terminals (and in auto/light).
+		if paletteIsLight(theme.Mode) {
+			return lightRenderer(wrapWidth), ""
+		}
 		return darkRenderer(wrapWidth), ""
 	}
 	raw, err := os.ReadFile(stylePath)
 	if err != nil {
-		return darkRenderer(wrapWidth), fmt.Sprintf("theme: cannot read style file %s (%v) — falling back to dark", stylePath, err)
+		return fallbackRenderer(theme.Mode, wrapWidth), fmt.Sprintf("theme: cannot read style file %s (%v) — falling back to the mode's palette", stylePath, err)
 	}
 	if err := strictDecodeStyle(raw); err != nil {
-		return darkRenderer(wrapWidth), fmt.Sprintf("theme: style file %s rejected (%v) — falling back to dark", stylePath, err)
+		return fallbackRenderer(theme.Mode, wrapWidth), fmt.Sprintf("theme: style file %s rejected (%v) — falling back to the mode's palette", stylePath, err)
 	}
 	renderer, err := glamour.NewTermRenderer(
 		glamour.WithStylesFromJSONBytes(raw),
 		glamour.WithWordWrap(wrapWidth),
 	)
 	if err != nil {
-		return darkRenderer(wrapWidth), fmt.Sprintf("theme: style file %s could not be applied (%v) — falling back to dark", stylePath, err)
+		return fallbackRenderer(theme.Mode, wrapWidth), fmt.Sprintf("theme: style file %s could not be applied (%v) — falling back to the mode's palette", stylePath, err)
 	}
 	return renderer, ""
+}
+
+// paletteIsLight reports whether a theme.mode value resolves to the light
+// palette. It mirrors paletteForMode's resolution (including the once-per-
+// process terminal detection for auto/unset) without building a palette.
+func paletteIsLight(mode string) bool {
+	switch mode {
+	case "dark":
+		return false
+	case "light":
+		return true
+	default: // "auto" and ""
+		return !detectDarkBackground()
+	}
+}
+
+// fallbackRenderer is the mode-appropriate embedded style, used whenever a
+// configured style file is unreadable, rejected, or unappliable.
+func fallbackRenderer(mode string, wrapWidth int) *glamour.TermRenderer {
+	if paletteIsLight(mode) {
+		return lightRenderer(wrapWidth)
+	}
+	return darkRenderer(wrapWidth)
+}
+
+// lightRenderer is the embedded Solarized Light style: cream code surfaces
+// instead of the dark style's near-black ones.
+func lightRenderer(wrapWidth int) *glamour.TermRenderer {
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithStylesFromJSONBytes([]byte(solarizedLightStyle)),
+		glamour.WithWordWrap(wrapWidth),
+	)
+	if err == nil {
+		return renderer
+	}
+	// Embedded JSON should never fail; degrade to the stock preset.
+	renderer, _ = glamour.NewTermRenderer(
+		glamour.WithStandardStyle("light"),
+		glamour.WithWordWrap(wrapWidth),
+	)
+	return renderer
 }
 
 // darkRenderer is the explicit fallback (and the default when no style
