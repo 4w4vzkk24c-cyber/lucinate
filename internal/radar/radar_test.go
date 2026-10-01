@@ -36,11 +36,13 @@ package radar
 //	M20 -> TestRadarTelemetryFollowsCwd (telemetry re-hardcoded to the store: the cwd markers vanish)
 //	M21 -> TestRadarTelemetryFollowsCwd (card scan moved to cwd: Stalled empty, HOME card title lost)
 //
-// 1609 v1.2 amendment (spec row 6, authoritative): the six cwd-broken
-// fixtures below gain t.Chdir(<their store repo>) immediately before each
-// Build(home) invocation - assertions unchanged. TestBuildFilemodeOnlyDirtyTree
-// is cwd-SAFE and deliberately left unamended; TestBuildStalledRules stays
-// green without t.Chdir (its assertions are cwd-independent).
+// 1609 v1.2 amendment (spec row 6, authoritative): the cwd-broken fixtures
+// below gain t.Chdir(<their store repo>) immediately before each Build(home)
+// invocation - assertions unchanged. TestBuildFilemodeOnlyDirtyTree is the
+// seventh: telemetry reads the process cwd, so unamended it falls back to the
+// clean worktree, the tree reads clean, and the card-path default fires
+// against its r4-F9 empty assertions. TestBuildStalledRules stays green
+// without t.Chdir (its assertions are cwd-independent).
 
 import (
 	"encoding/json"
@@ -1149,6 +1151,7 @@ func TestBuildFilemodeOnlyDirtyTree(t *testing.T) {
 	if err := os.Chmod(foo, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	t.Chdir(repo)
 
 	snap, err := Build(home)
 	if err != nil {
