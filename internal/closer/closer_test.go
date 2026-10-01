@@ -933,6 +933,99 @@ func TestCloserCapAndMoreLine(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------- AC15 / M23
+
+// TestCloserActionSurvivesNarrowWidth pins AC15 (and kills M23): the last-mile
+// action is the tail a naive whole-line clip drops, so at a narrow width
+// (COLUMNS=60) with a deliberately long title every shown item line must still
+// carry its action; the display cap's "+N more (of M)" line still renders; and
+// the wide rendering (COLUMNS=100, where nothing clips) is unchanged.
+func TestCloserActionSurvivesNarrowWidth(t *testing.T) {
+	fx := newFixture(t)
+
+	// A title long enough that "#9002 " + title alone already exceeds the narrow
+	// width, so a whole-line clip at 60 can only keep the action by reserving
+	// room for it — otherwise the action is the tail that gets cut.
+	const longTitle = "the remote wiring card whose title is deliberately long"
+	writeCard(t, fx.tasks, closerCard{
+		id:    "9002",
+		title: longTitle,
+		files: []string{"internal/remote/remote.go"},
+	})
+
+	total := mustJSON(t, fx) // the uncapped list is the source of truth.
+
+	// Wide rendering: COLUMNS=100 is the cap, so every shown line fits whole and
+	// must keep the canonical "#id title · rung · action" field order.
+	t.Setenv("COLUMNS", "100")
+	wide, _, code := execCloser(t, fx.home, fx.repo)
+	if code != 0 {
+		t.Fatalf("wide closer exit %d, want 0", code)
+	}
+	plainWide := ansi.Strip(wide)
+	wideItems, _, _, _ := parseRendered(t, wide)
+	if len(wideItems) == 0 {
+		t.Fatalf("wide rendering produced no item rows:\n%s", wide)
+	}
+	for _, it := range wideItems {
+		row, ok := jsonItemByID(total, it.id)
+		if !ok {
+			t.Fatalf("wide row %s is not in the --json item list", it.id)
+		}
+		want := fmt.Sprintf("#%s %s · %s · %s", row.ID, row.Title, row.Rung, row.LastMile)
+		if !strings.Contains(plainWide, want) {
+			t.Errorf("wide (COLUMNS=100) rendering changed the field order for %s:\nwant the whole line %q\nin:\n%s", it.id, want, wide)
+		}
+	}
+
+	// Narrow rendering: a naive whole-line clip drops the action tail.
+	t.Setenv("COLUMNS", "60")
+	narrow, _, code := execCloser(t, fx.home, fx.repo)
+	if code != 0 {
+		t.Fatalf("narrow closer exit %d, want 0", code)
+	}
+	plainNarrow := ansi.Strip(narrow)
+	narrowItems, more, moreN, moreM := parseRendered(t, narrow)
+	if len(narrowItems) == 0 {
+		t.Fatalf("narrow rendering produced no item rows:\n%s", narrow)
+	}
+	if len(narrowItems) != 5 {
+		t.Errorf("display cap: want 5 item rows at narrow width, got %d:\n%s", len(narrowItems), narrow)
+	}
+	if len(more) != 1 {
+		t.Errorf("the '+N more (of M)' line must still render at narrow width, got %d: %v", len(more), more)
+	} else if moreM != len(total) || moreN != len(total)-5 {
+		t.Errorf("more-line says +%d more (of %d), want +%d (of %d)", moreN, moreM, len(total)-5, len(total))
+	}
+
+	for _, it := range narrowItems {
+		row, ok := jsonItemByID(total, it.id)
+		if !ok {
+			t.Fatalf("narrow row %s is not in the --json item list", it.id)
+		}
+		if it.action == "" || !legalAction(it.action) {
+			t.Errorf("narrow item %s carries no legal last-mile action (%q) — the action was clipped away:\n%s", it.id, it.action, narrow)
+		}
+		if !strings.Contains(plainNarrow, row.LastMile) {
+			t.Errorf("narrow item %s dropped its action %q (AC15/M23) — the action must survive clipping:\n%s", it.id, row.LastMile, narrow)
+		}
+	}
+
+	// The narrow width really bound the long-title row: its title must have been
+	// clipped, yet the row still carries its action.
+	if _, ok := itemByID(narrowItems, "9002"); !ok {
+		t.Fatalf("the long-title card 9002 is not among the shown narrow rows:\n%s", narrow)
+	}
+	if strings.Contains(plainNarrow, "#9002 "+longTitle+" · ") {
+		t.Errorf("the long title was NOT clipped at COLUMNS=60 — the narrow arm never bound:\n%s", narrow)
+	}
+	if longRow, ok := jsonItemByID(total, "9002"); !ok {
+		t.Fatalf("long-title card 9002 missing from the --json item list")
+	} else if !strings.Contains(plainNarrow, longRow.LastMile) {
+		t.Errorf("long-title card 9002 lost its action %q at COLUMNS=60:\n%s", longRow.LastMile, narrow)
+	}
+}
+
 // ---------------------------------------------------------------- AC8 build wiring
 
 // TestCloserMakeBuildTargets pins AC8's build wiring: make build-guard and make
