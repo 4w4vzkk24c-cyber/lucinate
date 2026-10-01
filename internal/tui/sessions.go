@@ -26,6 +26,55 @@ type sessionItem struct {
 	updatedAt    int64 // Unix millis
 	group        string
 	hasActiveRun *bool
+	// stoppedAt is when the client saw this session's run end; zero when
+	// no stop marker is showing. See markRecentStops.
+	stoppedAt time.Time
+}
+
+// isRunning reports whether the gateway positively reports an active run.
+func (i sessionItem) isRunning() bool {
+	return i.hasActiveRun != nil && *i.hasActiveRun
+}
+
+// stopMarkerTTL is how long a session whose run just ended keeps its stop
+// glyph in the sidebar before settling to idle.
+const stopMarkerTTL = 8 * time.Second
+
+// stopMarkerExpiredMsg fires stopMarkerTTL after a stop was first seen, so
+// the marker clears without waiting for the next sessions.changed event.
+type stopMarkerExpiredMsg struct{}
+
+// markRecentStops returns next with stop markers applied against the
+// previous list: a session that was running and no longer is gets stamped
+// now, and a stamp younger than stopMarkerTTL is carried across refreshes.
+// newStop reports whether any session was freshly stamped. The transition
+// is all the client can see — sessions.list carries no last-outcome field,
+// so a finished run and an aborted one mark identically.
+func markRecentStops(prev, next []sessionItem, now time.Time) (marked []sessionItem, newStop bool) {
+	before := make(map[string]sessionItem, len(prev))
+	for _, p := range prev {
+		before[p.key] = p
+	}
+	marked = make([]sessionItem, len(next))
+	for idx, n := range next {
+		p, known := before[n.key]
+		switch {
+		case !known || n.isRunning():
+			// Nothing to compare against, or running again.
+		case p.isRunning():
+			n.stoppedAt = now
+			newStop = true
+		case stopMarkerLive(p, now):
+			n.stoppedAt = p.stoppedAt
+		}
+		marked[idx] = n
+	}
+	return marked, newStop
+}
+
+// stopMarkerLive reports whether an item's stop marker is still inside its TTL.
+func stopMarkerLive(i sessionItem, now time.Time) bool {
+	return !i.stoppedAt.IsZero() && now.Sub(i.stoppedAt) < stopMarkerTTL
 }
 
 func (i sessionItem) FilterValue() string {
@@ -87,7 +136,11 @@ func (d sessionDelegate) Render(w io.Writer, m list.Model, index int, item list.
 		// Subagent sessions (pawns):   ♟ active, ♙ standby
 		isSub := strings.Contains(i.key, ":subagent:")
 		indicator := "  "
-		if i.hasActiveRun != nil {
+		if !i.stoppedAt.IsZero() {
+			// Just stopped: one glyph for agents and subagents alike,
+			// until expireStopMarkers clears the stamp.
+			indicator = lipgloss.NewStyle().Foreground(execClr).Bold(true).Render("■ ")
+		} else if i.hasActiveRun != nil {
 			if *i.hasActiveRun {
 				if isSub {
 					indicator = lipgloss.NewStyle().Foreground(subtle).Bold(true).Render("♟ ")
@@ -146,6 +199,35 @@ type sessionsModel struct {
 	// in the loading view so the user can confirm what they picked.
 	selectingTitle string
 	activeConn     *config.Connection // rendered above the session list — see renderConnectionBanner.
+	// now is the clock stop markers are stamped and expired against; nil
+	// means time.Now. Tests inject a hand-advanced clock.
+	now func() time.Time
+}
+
+func (m sessionsModel) clock() time.Time {
+	if m.now != nil {
+		return m.now()
+	}
+	return time.Now()
+}
+
+// expireStopMarkers clears stop markers past their TTL, updating the
+// visible rows in place so the cursor stays where the user left it.
+func (m *sessionsModel) expireStopMarkers() {
+	now := m.clock()
+	for idx := range m.allSessions {
+		if !stopMarkerLive(m.allSessions[idx], now) {
+			m.allSessions[idx].stoppedAt = time.Time{}
+		}
+	}
+	for idx, it := range m.list.Items() {
+		s, ok := it.(sessionItem)
+		if !ok || s.stoppedAt.IsZero() || stopMarkerLive(s, now) {
+			continue
+		}
+		s.stoppedAt = time.Time{}
+		m.list.SetItem(idx, s)
+	}
 }
 
 func newSessionsModel(b backend.Backend, agentID, agentName, modelID, mainKey string, hideHints bool, activeConn *config.Connection, disableExitKeys bool) sessionsModel {
@@ -305,6 +387,12 @@ func (m sessionsModel) Update(msg tea.Msg) (sessionsModel, tea.Cmd) {
 	// will swap us out for the chat view. Drop further input —
 	// keystrokes, list-internal cmds — so the user can't keep
 	// moving the cursor while the transition is in flight.
+	// The expiry sweep runs ahead of that guard: it is not input, and a
+	// dropped expiry would leave its marker up until the next refresh.
+	if _, ok := msg.(stopMarkerExpiredMsg); ok {
+		m.expireStopMarkers()
+		return m, nil
+	}
 	if m.selecting {
 		return m, nil
 	}
@@ -316,8 +404,12 @@ func (m sessionsModel) Update(msg tea.Msg) (sessionsModel, tea.Cmd) {
 			m.err = msg.err
 			return m, nil
 		}
-		m.allSessions = msg.sessions
+		var newStop bool
+		m.allSessions, newStop = markRecentStops(m.allSessions, msg.sessions, m.clock())
 		m.rebuildList()
+		if newStop {
+			return m, tea.Tick(stopMarkerTTL, func(time.Time) tea.Msg { return stopMarkerExpiredMsg{} })
+		}
 		return m, nil
 
 	case tea.KeyPressMsg:

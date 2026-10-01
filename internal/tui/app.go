@@ -757,11 +757,11 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 		}
 		return m, forward
 
-	case sessionsLoadedMsg:
+	case sessionsLoadedMsg, stopMarkerExpiredMsg:
 		// A sessions list landed (modal Init, or the sidebar's debounced
-		// refresh) — route it to the sessions model in both shapes.
-		// Guarded so a zero-value sidebar (never constructed) is left
-		// alone.
+		// refresh), or a stop marker reached its TTL — route it to the
+		// sessions model in both shapes. Guarded so a zero-value sidebar
+		// (never constructed) is left alone.
 		if m.sessionsModel.backend != nil {
 			var cmd tea.Cmd
 			m.sessionsModel, cmd = m.sessionsModel.Update(msg)
