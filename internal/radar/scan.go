@@ -26,6 +26,23 @@ const (
 // scanBudget is the whole-scan deadline Build grants ScanTasks.
 var scanBudget = defaultBudget
 
+// getwd is the process-cwd seam (1609 v1.2). Production never reassigns it;
+// tests substitute an error-returning func to pin telemetryDir's store
+// fallback without touching the real working directory.
+var getwd = os.Getwd
+
+// telemetryDir resolves the git-telemetry root (v1.2): the PROCESS WORKING
+// DIRECTORY on success, and the card store path only when Getwd errors so a
+// failed cwd lookup stays non-fatal. It resolves per Build call — never
+// cached at init — and BOTH telemetry call sites share this one helper so
+// their root can never drift apart.
+func telemetryDir(home string) string {
+	if wd, err := getwd(); err == nil {
+		return wd
+	}
+	return filepath.Join(home, filepath.FromSlash(repoRelPath))
+}
+
 // ScanTasks concurrently scans a kanban tasks directory (*.md, non-recursive)
 // and returns the active cards: any card whose frontmatter status is not
 // "done" or "archived". Frontmatter parsing terminates at the second "---"
@@ -293,12 +310,12 @@ func Build(home string) (RadarSnapshot, error) {
 		}
 	}
 
-	tel, _ := CollectGit(filepath.Join(home, filepath.FromSlash(repoRelPath)), now)
+	tel, _ := CollectGit(telemetryDir(home), now)
 	snap.DirtyFiles = append(snap.DirtyFiles, tel.DirtyFiles...)
 	snap.Evidence = append(snap.Evidence, tel.Landed...)
 
 	// Branch evidence beyond the default-branch log (spec r3 F7 ii).
-	branchMsgs := gitAllMessages(filepath.Join(home, filepath.FromSlash(repoRelPath)))
+	branchMsgs := gitAllMessages(telemetryDir(home))
 
 	// InFlight (D4): only a Do-now-SEEDED rows[0] promotes — a band row
 	// (seeded=false), even one whose id matches an in-progress card, is never
