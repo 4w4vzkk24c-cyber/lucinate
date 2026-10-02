@@ -105,6 +105,12 @@ func (b *Backend) SessionArchive(ctx context.Context, sessionKey string) error {
 	return b.client.SessionArchive(ctx, sessionKey)
 }
 
+// --- RenameBackend ---
+
+func (b *Backend) SessionRename(ctx context.Context, sessionKey, title string) error {
+	return b.client.SessionRename(ctx, sessionKey, title)
+}
+
 func (b *Backend) ChatSend(ctx context.Context, sessionKey string, params backend.ChatSendParams) (*protocol.ChatSendResult, error) {
 	message := params.Message
 	if catalog := b.takePendingCatalog(sessionKey, params.Skills); catalog != "" {

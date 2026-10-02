@@ -979,6 +979,23 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 		m.state = viewCrons
 		return m, nil
 
+	case sessionRenamedMsg:
+		slog.Debug("session renamed", "session", msg.sessionKey, "err", msg.err, "open", m.chatModel.sessionKey)
+		if msg.sessionKey == m.chatModel.sessionKey {
+			outcome := chatMessage{role: "system", content: fmt.Sprintf("Session renamed to %q.", msg.title)}
+			if msg.err != nil {
+				outcome = chatMessage{role: "system", errMsg: fmt.Sprintf("Could not rename this session: %v", msg.err)}
+			}
+			m.chatModel.appendMessage(outcome)
+			m.chatModel.updateViewport()
+		}
+		if msg.err != nil {
+			return m, nil
+		}
+		// Reload so the sidebar shows the new name without waiting for a
+		// gateway event.
+		return m, m.sessionsModel.loadSessions()
+
 	case sessionRemovedMsg:
 		slog.Debug("session removed", "session", msg.sessionKey, "verb", msg.verb, "err", msg.err, "open", m.chatModel.sessionKey)
 		reload := m.sessionsModel.loadSessions()

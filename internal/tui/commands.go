@@ -53,7 +53,7 @@ type pendingNavConfirm struct {
 // hint surfaces the picker first, "/model" before "/models" likewise.
 // Tab now extends to the longest common prefix and the completion menu
 // shows every candidate, so the curated order no longer rules Tab.
-var slashCommands = []string{"/agents", "/agent", "/archive", "/attach", "/cancel", "/clear", "/commands", "/compact", "/config", "/connections", "/crons", "/cron", "/delete", "/exit", "/export", "/help", "/header", "/model", "/models", "/mouse", "/new", "/quit", "/record", "/reset", "/routines", "/routine", "/sessions", "/settings", "/skills", "/stats", "/status", "/think"}
+var slashCommands = []string{"/agents", "/agent", "/archive", "/attach", "/cancel", "/clear", "/commands", "/compact", "/config", "/connections", "/crons", "/cron", "/delete", "/exit", "/export", "/help", "/header", "/model", "/models", "/mouse", "/new", "/quit", "/record", "/rename", "/reset", "/routines", "/routine", "/sessions", "/settings", "/skills", "/stats", "/status", "/think"}
 
 // Verbs for removing the open session, used in the outcome message.
 const (
@@ -83,6 +83,36 @@ func (m *chatModel) confirmSessionRemoval(verb, promptFormat, runningStatus stri
 	}
 	m.appendMessage(chatMessage{role: "system", content: m.pendingConfirm.prompt, confirmPrompt: true})
 	m.updateViewport()
+}
+
+// sessionRenameTimeout bounds the gateway round-trip of a rename.
+const sessionRenameTimeout = 15 * time.Second
+
+// handleRenameCommand names the open session. text is the command as typed:
+// the title keeps its case and inner spacing, only the ends are trimmed.
+// No confirmation — a rename is undone by another rename.
+func (m *chatModel) handleRenameCommand(text string) (bool, tea.Cmd) {
+	title := ""
+	if parts := strings.SplitN(strings.TrimSpace(text), " ", 2); len(parts) == 2 {
+		title = strings.TrimSpace(parts[1])
+	}
+	if title == "" {
+		m.appendMessage(chatMessage{role: "system", content: "Usage: /rename <title> — name this session"})
+		m.updateViewport()
+		return true, nil
+	}
+	renamer, ok := m.backend.(backend.RenameBackend)
+	if !ok {
+		m.appendMessage(chatMessage{role: "system", errMsg: "/rename is not available on this connection"})
+		m.updateViewport()
+		return true, nil
+	}
+	sessionKey := m.sessionKey
+	return true, func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), sessionRenameTimeout)
+		defer cancel()
+		return sessionRenamedMsg{sessionKey: sessionKey, title: title, err: renamer.SessionRename(ctx, sessionKey, title)}
+	}
 }
 
 // thinkingLevels is the ordered list of valid thinking levels.
@@ -115,6 +145,7 @@ const helpBody = `/quit, /exit — quit lucinate
 /mouse on|off — mouse capture (on, the default: wheel scrolls history, drag selects & copies; off: native terminal selection)
 /new — start a new session with this agent and open it
 /record on|off — toggle live transcript capture for this session (bare /record shows state)
+/rename <title> — name this session; the sidebar shows it in place of the derived title
 /reset — delete session and start fresh
 /sessions — browse and restore previous sessions
 /stats — show session statistics
@@ -449,6 +480,11 @@ func (m *chatModel) handleSlashCommand(text string) (handled bool, cmd tea.Cmd) 
 		}
 		m.updateViewport()
 		return true, nil
+	}
+
+	// /rename <title> names the open session.
+	if command == "/rename" || strings.HasPrefix(command, "/rename ") {
+		return m.handleRenameCommand(text)
 	}
 
 	// /attach stages a local file for the next send (W3, send-only).

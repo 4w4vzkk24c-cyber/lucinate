@@ -309,6 +309,7 @@ type sessionsListResponse struct {
 // The gateway returns many additional fields which we ignore.
 type sessionListEntry struct {
 	Key                string `json:"key"`
+	Label              string `json:"label"`
 	DerivedTitle       string `json:"derivedTitle"`
 	LastMessagePreview string `json:"lastMessagePreview"`
 	UpdatedAt          int64  `json:"updatedAt"`
@@ -316,6 +317,22 @@ type sessionListEntry struct {
 	HasActiveRun       *bool  `json:"hasActiveRun,omitempty"`
 	Status             string `json:"status"`
 	AbortedLastRun     bool   `json:"abortedLastRun"`
+}
+
+// sessionTitleMaxCells caps a stored title; the sidebar cuts it further to
+// fit its pane.
+const sessionTitleMaxCells = 80
+
+// sessionTitle picks what a session is called: the label the operator gave
+// it (/rename), else the title the gateway derived from the conversation.
+// Empty means neither, and the row falls back to the session key. The cap
+// is by display cells — a byte slice cuts a CJK or emoji title mid-rune.
+func sessionTitle(entry sessionListEntry) string {
+	title := strings.TrimSpace(entry.Label)
+	if title == "" {
+		title = cleanDerivedTitle(entry.DerivedTitle)
+	}
+	return ansi.Truncate(title, sessionTitleMaxCells, "...")
 }
 
 // cleanSessionDisplayKey strips internal routing prefixes like agent:<agentId>:
@@ -383,10 +400,7 @@ func parseSessionsPayload(raw []byte) ([]sessionItem, error) {
 			slog.Debug("sessions list entry parse error", "err", err)
 			continue
 		}
-		title := cleanDerivedTitle(entry.DerivedTitle)
-		if len(title) > 80 {
-			title = title[:77] + "..."
-		}
+		title := sessionTitle(entry)
 		items = append(items, sessionItem{
 			key:          entry.Key,
 			title:        title,

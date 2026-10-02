@@ -372,6 +372,13 @@ type ArchiveBackend interface {
 	SessionArchive(ctx context.Context, sessionKey string) error
 }
 
+// RenameBackend exposes naming a session behind /rename. Backends where a
+// session has no name of its own omit this and the TUI shows a "not
+// available" hint.
+type RenameBackend interface {
+	SessionRename(ctx context.Context, sessionKey, title string) error
+}
+
 // ThinkingBackend exposes the per-session thinking-level switch
 // behind /think.
 type ThinkingBackend interface {

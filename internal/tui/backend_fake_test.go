@@ -52,6 +52,10 @@ type fakeBackend struct {
 	sessionDeleteHook  func(ctx context.Context, sessionKey string) error
 	sessionArchiveHook func(ctx context.Context, sessionKey string) error
 
+	// sessionRenameHook, when non-nil, records a rename and decides its
+	// outcome.
+	sessionRenameHook func(ctx context.Context, sessionKey, title string) error
+
 	// sessionsListHook, when non-nil, replaces the default empty
 	// SessionsList response so tests of the chat header's
 	// context-usage path can stage a realistic gateway payload (or
@@ -151,6 +155,12 @@ func (f *fakeBackend) SessionDelete(ctx context.Context, sessionKey string) erro
 func (f *fakeBackend) SessionArchive(ctx context.Context, sessionKey string) error {
 	if f.sessionArchiveHook != nil {
 		return f.sessionArchiveHook(ctx, sessionKey)
+	}
+	return nil
+}
+func (f *fakeBackend) SessionRename(ctx context.Context, sessionKey, title string) error {
+	if f.sessionRenameHook != nil {
+		return f.sessionRenameHook(ctx, sessionKey, title)
 	}
 	return nil
 }

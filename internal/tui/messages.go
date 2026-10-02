@@ -344,6 +344,15 @@ type sessionClearedMsg struct {
 	newSessionKey string
 }
 
+// sessionRenamedMsg reports the outcome of /rename. sessionKey is the
+// session that was renamed, so the confirmation is not written into a chat
+// the operator has since switched to.
+type sessionRenamedMsg struct {
+	sessionKey string
+	title      string
+	err        error
+}
+
 // sessionRemovedMsg reports the outcome of archiving or deleting a session
 // (/archive, /delete). sessionKey is the session the removal was asked for,
 // so an outcome that lands after the operator has moved on does not move

@@ -730,6 +730,20 @@ func (c *Client) SessionDelete(ctx context.Context, sessionKey string) error {
 	})
 }
 
+// SessionRename sets a session's label, the name shown for it in session
+// lists. The gateway requires labels to be unique.
+func (c *Client) SessionRename(ctx context.Context, sessionKey, title string) error {
+	gw, ctx, cancel, err := c.rpc(ctx)
+	if err != nil {
+		return err
+	}
+	defer cancel()
+	return gw.SessionsPatch(ctx, protocol.SessionsPatchParams{
+		Key:   sessionKey,
+		Label: &title,
+	})
+}
+
 // sessionArchiveParams is the sessions.patch body that archives a session.
 // The openclaw-go SessionsPatchParams predates the gateway's archived
 // field, so the request is sent raw instead of through SessionsPatch.
