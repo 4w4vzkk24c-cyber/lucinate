@@ -321,6 +321,19 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}()
 	prevState := m.state
 	next, cmd := m.update(msg)
+	// The one place a re-render of stale rows is asked for. Whatever the
+	// message did (resized the pane, changed the theme, seeded a chat from
+	// the cache, delivered history rendered before a resize), the rows it
+	// left stale are re-rendered in a command, never on this goroutine.
+	if rerender := next.chatModel.rerenderCmd(); rerender != nil {
+		cmd = tea.Batch(cmd, rerender)
+	}
+	// A chat opened where it could not hear unkeyed replies finishes
+	// starting up now that it can.
+	if next.chatModel.initPending && next.chatHasFocus() {
+		next.chatModel.initPending = false
+		cmd = tea.Batch(cmd, next.chatModel.initRest())
+	}
 	if next.state != prevState {
 		// Re-entering the agent picker from another screen (config,
 		// connections, chat) reuses the existing selectModel, so clear
@@ -687,8 +700,7 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 		return m, cmd
 
 	case askConfigClosedMsg:
-		m.prefs = msg.prefs
-		m.chatModel.prefs = msg.prefs
+		m.setPrefs(msg.prefs)
 		m.state = viewConfig
 		return m, nil
 
@@ -712,8 +724,7 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 		return m, nil
 
 	case prefsUpdatedMsg:
-		m.prefs = msg.prefs
-		m.chatModel.prefs = msg.prefs
+		m.setPrefs(msg.prefs)
 		return m, nil
 
 	case updateCheckDoneMsg:
@@ -922,7 +933,7 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 			m.chatModel = m.cronsReturnChat
 			m.cronsReturnChat = chatModel{}
 			m.cronsReturnValid = false
-			m.chatModel.setSize(m.width, m.height)
+			m.applyChatLayout()
 			m.chatModel.updateViewport()
 		}
 		m.state = m.cronsReturn
@@ -949,26 +960,24 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 		if agentID == "" {
 			agentID = m.sessionsModel.agentID
 		}
-		_, _ = m.chatModel.stopRecording()
-		slog.Debug("session switch", "from", m.chatModel.sessionKey, "to", msg.sessionKey)
-		m.stashChat()
-		m.chatModel = newChatModel(m.backend, msg.sessionKey, agentID, msg.agentName, msg.modelID, m.prefs, m.hideInput, connectionLabel(m.activeConn), "", m.brightCursor)
-		// A session visited before paints from memory at once; Init
-		// still fetches, and that reply replaces these rows. Seeded
-		// before applyChatLayout so setSize re-wraps them to the pane.
-		if rows, remembered := m.transcripts.get(msg.sessionKey); remembered {
-			m.chatModel.seedHistory(rows)
+		if msg.inPlaceOf != "" {
+			// The follow-up to a session command: it replaces the chat
+			// that command was issued from, wherever that chat now is,
+			// and does not move the operator.
+			target := m.sessionChat(msg.inPlaceOf)
+			if target == nil {
+				return m, nil
+			}
+			return m, m.replaceChat(target, msg.sessionKey, agentID, msg.agentName, msg.modelID)
 		}
 		m.state = viewChat
 		m.sidebarFocus = false
-		m.syncSidebarCursor(msg.sessionKey)
 		// Reset the sidebar's selecting lock: it was set for the
 		// full-screen modal's loading transition, but the persistent
 		// sidebar must keep rendering the full session list beside
 		// the chat view (not the "Loading <title>..." placeholder).
 		m.sessionsModel.selecting = false
-		m.applyChatLayout()
-		return m, m.chatModel.Init()
+		return m, m.replaceChat(&m.chatModel, msg.sessionKey, agentID, msg.agentName, msg.modelID)
 
 	case cronTranscriptMsg:
 		// Cron-isolated runs don't keep a queryable chat session, so
@@ -984,8 +993,13 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 			m.cronsReturnValid = true
 		}
 		m.chatModel = newChatModel(m.backend, "", msg.job.AgentID, msg.agentName, "", m.prefs, true, connectionLabel(m.activeConn), "", m.brightCursor)
-		m.chatModel.setSize(m.width, m.height)
+		m.applyChatLayout()
+		// The one place Markdown is rendered on the UI goroutine: run
+		// summaries are short, and this renderer is never handed to a
+		// command. The rows are stamped at the pane's width, so nothing
+		// is stale and no re-render follows.
 		m.chatModel.messages = buildCronTranscriptMessages(cronPayloadText(msg.job), msg.runs, m.chatModel.renderer)
+		stampRendered(m.chatModel.messages, m.chatModel.stamp())
 		m.chatModel.historyLoading = false
 		m.chatModel.transcript = true
 		m.chatModel.updateViewport()
@@ -1002,24 +1016,28 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 	case historyRefreshMsg:
 		return m.deliverToChat(msg.sessionKey, msg)
 
+	case transcriptRerenderedMsg:
+		return m.deliverToChat(msg.sessionKey, msg)
+
 	case sessionClearedMsg:
-		// Forget the reset session whether or not the reset succeeded.
-		// /reset is delete-then-recreate: a failure at the recreate step
-		// leaves the session deleted, and the reply cannot say which
-		// step failed. A needless drop costs one cold open; a kept
-		// entry would paint a session that no longer exists.
-		m.transcripts.drop(msg.sessionKey)
+		// /reset is delete-then-recreate. Forget the session exactly when
+		// the delete went through: a kept entry would paint a session
+		// that no longer exists, and a dropped one for a session that is
+		// still there would only be remembered again on the next switch.
+		if msg.deleted {
+			m.transcripts.drop(msg.sessionKey)
+		}
 		return m.deliverToChat(msg.sessionKey, msg)
 
 	case sessionRenamedMsg:
 		slog.Debug("session renamed", "session", msg.sessionKey, "err", msg.err, "open", m.chatModel.sessionKey)
-		if msg.sessionKey == m.chatModel.sessionKey {
+		if chat := m.sessionChat(msg.sessionKey); chat != nil {
 			outcome := chatMessage{role: "system", content: fmt.Sprintf("Session renamed to %q.", msg.title)}
 			if msg.err != nil {
 				outcome = chatMessage{role: "system", errMsg: fmt.Sprintf("Could not rename this session: %v", msg.err)}
 			}
-			m.chatModel.appendMessage(outcome)
-			m.chatModel.updateViewport()
+			chat.appendMessage(outcome)
+			chat.updateViewport()
 		}
 		if msg.err != nil {
 			return m, nil
@@ -1036,35 +1054,40 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 			// may not be the open one.
 			m.transcripts.drop(msg.sessionKey)
 		}
-		if msg.sessionKey != m.chatModel.sessionKey {
+		chat := m.sessionChat(msg.sessionKey)
+		if chat == nil {
 			// The operator moved on before the outcome landed: leave the
 			// chat they are on alone and just refresh the list.
 			return m, reload
 		}
 		if msg.err != nil {
-			m.chatModel.replacePendingSystem(chatMessage{
+			chat.replacePendingSystem(chatMessage{
 				role:   "system",
 				errMsg: fmt.Sprintf("Could not %s this session: %v", msg.verb, msg.err),
 			})
-			m.chatModel.updateViewport()
+			chat.updateViewport()
 			return m, nil
 		}
-		// The chat still open is for a session that no longer exists; the
-		// switch that follows must not remember it.
-		m.chatModel.sessionGone = true
-		// The open session has left the list, so the chat cannot stay on
-		// it: move to a neighbour, or start a session when it was the last.
+		// That chat is on a session that no longer exists; the switch that
+		// follows must not remember it.
+		chat.sessionGone = true
+		// The session has left the list, so its chat cannot stay on it:
+		// move it to a neighbour, or start a session when it was the last.
 		next, ok := m.sessionAfterRemoval(msg.sessionKey)
 		if !ok {
-			return m, tea.Batch(createSessionCmd(m.backend, m.sessionsModel.agentID, m.sessionsModel.agentName, m.sessionsModel.modelID), reload)
+			return m, tea.Batch(createSessionCmd(m.backend, m.sessionsModel.agentID, m.sessionsModel.agentName, m.sessionsModel.modelID, msg.sessionKey), reload)
 		}
+		next.inPlaceOf = msg.sessionKey
 		return m, tea.Batch(func() tea.Msg { return next }, reload)
 
 	case newSessionCreatedMsg:
+		if msg.inPlaceOf != "" {
+			return m.newSessionInPlace(msg)
+		}
 		if msg.err != nil {
 			if m.state == viewChat {
-				// Asked for from the chat (/new): say why in the chat
-				// and leave the open session and the sidebar as they are.
+				// Asked for beside the chat: say why in the chat and
+				// leave the open session and the sidebar as they are.
 				m.chatModel.appendMessage(chatMessage{
 					role:   "system",
 					errMsg: fmt.Sprintf("Could not start a new session: %v", msg.err),
@@ -1076,17 +1099,14 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 			m.sessionsModel.loading = false
 			return m, nil
 		}
-		_, _ = m.chatModel.stopRecording()
 		slog.Debug("session switch", "from", m.chatModel.sessionKey, "to", msg.sessionKey, "new", true)
-		m.stashChat()
-		m.chatModel = newChatModel(m.backend, msg.sessionKey, m.sessionsModel.agentID, msg.agentName, msg.modelID, m.prefs, m.hideInput, connectionLabel(m.activeConn), "", m.brightCursor)
 		m.state = viewChat
 		m.sidebarFocus = false
-		m.applyChatLayout()
+		open := m.replaceChat(&m.chatModel, msg.sessionKey, m.sessionsModel.agentID, msg.agentName, msg.modelID)
 		// Reload the sidebar so the new session is listed (and, via the
 		// sessionsLoadedMsg handler, highlighted) without waiting for a
 		// gateway event.
-		return m, tea.Batch(m.chatModel.Init(), m.sessionsModel.loadSessions())
+		return m, tea.Batch(open, m.sessionsModel.loadSessions())
 
 	case goBackFromSessionsMsg:
 		m.state = viewChat
@@ -1120,7 +1140,7 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 		m.selectModel.selecting = false
 		m.selectModel.selectingName = ""
 		_, _ = m.chatModel.stopRecording()
-		m.stashChat()
+		m.stashChat(&m.chatModel)
 		m.chatModel = newChatModel(m.backend, msg.sessionKey, msg.agentID, msg.agentName, msg.modelID, m.prefs, m.hideInput, connectionLabel(m.activeConn), initialMsg, m.brightCursor)
 		// The picker → chat transition never passes through the sessions
 		// modal, so the sidebar's sessionsModel is still its zero value
@@ -1374,17 +1394,16 @@ func (m *AppModel) syncSidebarCursor(sessionKey string) {
 	}
 }
 
-// stashChat remembers the open chat's transcript in the transcript cache.
-// Call it immediately before m.chatModel is replaced by another session's
-// chat. It is the only writer of the cache, and it stores what the chat was
-// showing from the gateway: its server-canonical rows.
+// stashChat remembers a chat's transcript in the transcript cache. Call it
+// immediately before that chat is replaced by another session's. It is the
+// only writer of the cache, and it stores what the chat was showing from
+// the gateway: its server-canonical rows.
 //
 // Two places replace m.chatModel and deliberately do NOT stash: opening a
 // cron transcript, which parks the outgoing chat in cronsReturnChat and so
 // keeps it alive, and restoring that parked chat, which discards a
 // transcript view that has no session.
-func (m *AppModel) stashChat() {
-	out := &m.chatModel
+func (m *AppModel) stashChat(out *chatModel) {
 	switch {
 	case out.sessionKey == "" || out.transcript:
 		return // not a session chat
@@ -1403,25 +1422,114 @@ func (m *AppModel) stashChat() {
 	m.transcripts.put(out.sessionKey, rows)
 }
 
-// deliverToChat hands a reply about one session (its history, or the outcome
-// of resetting it) to the chat that is on that session, whatever view is
-// showing and wherever focus is. It runs ahead of the view-state routing
-// because that routing drops the reply when the operator is in another view
-// or has the sidebar focused, which would leave a chat on "loading", or on
-// rows painted from the cache, with nothing to correct it. A reply for the
-// chat parked behind a cron transcript goes to that chat; a reply for
-// neither is dropped.
-func (m AppModel) deliverToChat(sessionKey string, msg tea.Msg) (AppModel, tea.Cmd) {
-	var cmd tea.Cmd
+// sessionChat returns the chat that is on sessionKey: the open one, or the
+// one parked behind a cron transcript, or nil when neither is. Everything
+// that acts on "the chat of this session" (a reply about it, the outcome of
+// a command issued from it) finds the chat here, so the view that happens
+// to be showing never decides where an outcome lands.
+func (m *AppModel) sessionChat(sessionKey string) *chatModel {
 	switch {
 	case sessionKey == m.chatModel.sessionKey:
-		m.chatModel, cmd = m.chatModel.Update(msg)
+		return &m.chatModel
 	case m.cronsReturnValid && sessionKey == m.cronsReturnChat.sessionKey:
-		m.cronsReturnChat, cmd = m.cronsReturnChat.Update(msg)
-	default:
-		slog.Debug("dropped a reply for a session that is not open", "for", sessionKey, "open", m.chatModel.sessionKey)
+		return &m.cronsReturnChat
 	}
+	return nil
+}
+
+// deliverToChat hands a reply about one session (its history, a re-render
+// of its rows, or the outcome of resetting it) to the chat that is on that
+// session, whatever view is showing and wherever focus is. It runs ahead of
+// the view-state routing because that routing drops the reply when the
+// operator is in another view or has the sidebar focused, which would leave
+// a chat on "loading", or on rows painted from the cache, with nothing to
+// correct it. A reply for no chat is dropped.
+func (m AppModel) deliverToChat(sessionKey string, msg tea.Msg) (AppModel, tea.Cmd) {
+	chat := m.sessionChat(sessionKey)
+	if chat == nil {
+		slog.Debug("dropped a reply for a session that is not open", "for", sessionKey, "open", m.chatModel.sessionKey)
+		return m, nil
+	}
+	var cmd tea.Cmd
+	*chat, cmd = chat.Update(msg)
 	return m, cmd
+}
+
+// replaceChat puts a chat on sessionKey where target is: target is the open
+// chat or the parked one. The outgoing chat is remembered, the new one is
+// painted from the cache when the session was visited before, and it is
+// laid out only when it is the one on screen (a parked chat is laid out
+// when it is restored). The returned command loads the new chat.
+func (m *AppModel) replaceChat(target *chatModel, sessionKey, agentID, agentName, modelID string) tea.Cmd {
+	_, _ = target.stopRecording()
+	slog.Debug("session switch", "from", target.sessionKey, "to", sessionKey)
+	m.stashChat(target)
+	*target = newChatModel(m.backend, sessionKey, agentID, agentName, modelID, m.prefs, m.hideInput, connectionLabel(m.activeConn), "", m.brightCursor)
+	// A session visited before paints from memory at once; Init still
+	// fetches, and that reply replaces these rows.
+	if rows, remembered := m.transcripts.get(sessionKey); remembered {
+		target.seedHistory(rows)
+	}
+	if target == &m.chatModel {
+		if !m.sidebarFocus {
+			m.syncSidebarCursor(sessionKey)
+		}
+		m.applyChatLayout()
+		if m.chatHasFocus() {
+			return target.Init()
+		}
+	}
+	// History is routed by session and reaches this chat wherever it is.
+	// The rest of Init is not: issued now, its replies would land in the
+	// cron transcript or the view the operator is in. Update issues it
+	// once this chat has focus.
+	target.initPending = true
+	return target.loadHistory()
+}
+
+// chatHasFocus reports whether a message with no session on it is routed to
+// the open chat: the chat view is showing and the sidebar does not have
+// focus. It mirrors the viewChat branch of update.
+func (m AppModel) chatHasFocus() bool {
+	return m.state == viewChat && !(m.sidebarFocus && m.width >= sidebarMinCols)
+}
+
+// newSessionInPlace handles the outcome of creating a session on behalf of
+// a chat (/new, or a removal that left nothing to move to). The new session
+// replaces that chat where it is; the view and focus stay as they are. If
+// the chat is gone by now, the session exists and is listed by the reload,
+// and nothing is opened: no chat is interrupted to announce it.
+func (m AppModel) newSessionInPlace(msg newSessionCreatedMsg) (AppModel, tea.Cmd) {
+	chat := m.sessionChat(msg.inPlaceOf)
+	if msg.err != nil {
+		if chat == nil {
+			slog.Debug("a new session failed for a chat that is gone", "for", msg.inPlaceOf, "err", msg.err)
+			return m, nil
+		}
+		chat.appendMessage(chatMessage{
+			role:   "system",
+			errMsg: fmt.Sprintf("Could not start a new session: %v", msg.err),
+		})
+		chat.updateViewport()
+		return m, nil
+	}
+	reload := m.sessionsModel.loadSessions()
+	if chat == nil {
+		return m, reload
+	}
+	open := m.replaceChat(chat, msg.sessionKey, m.sessionsModel.agentID, msg.agentName, msg.modelID)
+	return m, tea.Batch(open, reload)
+}
+
+// setPrefs is the one place AppModel changes preferences on a chat: the
+// open chat and the one parked behind a cron transcript both take them, so
+// neither computes its render stamp from a stale theme.
+func (m *AppModel) setPrefs(prefs config.Preferences) {
+	m.prefs = prefs
+	m.chatModel.prefs = prefs
+	if m.cronsReturnValid {
+		m.cronsReturnChat.prefs = prefs
+	}
 }
 
 // sessionAfterRemoval picks the session to open once removed has left the

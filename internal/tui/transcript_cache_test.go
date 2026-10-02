@@ -347,7 +347,7 @@ func TestTranscriptCache_RemovedSessionsAreForgotten(t *testing.T) {
 func TestTranscriptCache_ResetForgetsTheOldKey(t *testing.T) {
 	m, _ := tcacheVisited(t) // sess-2 remembered, sess-3 open
 
-	m = w1Deliver(m, sessionClearedMsg{sessionKey: "sess-2", newSessionKey: "sess-2-fresh"})
+	m = w1Deliver(m, sessionClearedMsg{sessionKey: "sess-2", newSessionKey: "sess-2-fresh", deleted: true})
 
 	if _, ok := m.transcripts.get("sess-2"); ok {
 		t.Error("a reset session is still remembered under its old key")
@@ -402,15 +402,103 @@ func TestTranscriptCache_ResetReachesTheParkedChat(t *testing.T) {
 	}
 }
 
-// A reset that fails still forgets the session: the delete step may have
-// succeeded, and a needless drop costs only one cold open.
-func TestTranscriptCache_FailedResetStillForgets(t *testing.T) {
-	m, _ := tcacheVisited(t) // sess-2 remembered
+// /reset is delete-then-recreate, and its reply says whether the delete went
+// through. The session is forgotten exactly when it did.
+func TestTranscriptCache_FailedResetForgetsOnlyADeletedSession(t *testing.T) {
+	t.Run("the recreate step failed: the session is gone", func(t *testing.T) {
+		m, _ := tcacheVisited(t) // sess-2 remembered
 
-	m = w1Deliver(m, sessionClearedMsg{sessionKey: "sess-2", err: fmt.Errorf("create failed after delete")})
+		m = w1Deliver(m, sessionClearedMsg{sessionKey: "sess-2", err: fmt.Errorf("create failed"), deleted: true})
 
-	if _, ok := m.transcripts.get("sess-2"); ok {
-		t.Error("a reset that failed part-way left the session remembered")
+		if _, ok := m.transcripts.get("sess-2"); ok {
+			t.Error("a session deleted by a reset that then failed is still remembered")
+		}
+	})
+	t.Run("the delete step failed: the session is still there", func(t *testing.T) {
+		m, _ := tcacheVisited(t) // sess-2 remembered
+
+		m = w1Deliver(m, sessionClearedMsg{sessionKey: "sess-2", err: fmt.Errorf("delete refused")})
+
+		if _, ok := m.transcripts.get("sess-2"); !ok {
+			t.Error("a reset that deleted nothing still forgot the session")
+		}
+	})
+}
+
+// tcacheReset types /reset into the open chat, confirms it, and returns
+// what the backend round trip reports.
+func tcacheReset(t *testing.T, m AppModel) sessionClearedMsg {
+	t.Helper()
+	if handled, _ := m.chatModel.handleSlashCommand("/reset"); !handled || m.chatModel.pendingConfirm == nil {
+		t.Fatal("/reset did not ask for confirmation")
+	}
+	return m.chatModel.pendingConfirm.action()().(sessionClearedMsg)
+}
+
+// The reply reports which step failed, so the two failures can be told apart.
+func TestReset_ReplyReportsWhetherTheSessionWasDeleted(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		deleteErr, makeErr error
+		wantDeleted        bool
+	}{
+		{"delete fails", fmt.Errorf("delete refused"), nil, false},
+		{"create fails", nil, fmt.Errorf("create failed"), true},
+		{"both succeed", nil, nil, true},
+	} {
+		m, _ := tcacheVisited(t)
+		fb := m.backend.(*w1ProbeBackend)
+		fb.sessionDeleteHook = func(context.Context, string) error { return tc.deleteErr }
+		fb.createSessionHook = func(context.Context, string, string) (string, error) { return "fresh", tc.makeErr }
+
+		got := tcacheReset(t, m)
+
+		if got.deleted != tc.wantDeleted {
+			t.Errorf("%s: the reply says deleted=%v, want %v", tc.name, got.deleted, tc.wantDeleted)
+		}
+		if (got.err != nil) != (tc.deleteErr != nil || tc.makeErr != nil) {
+			t.Errorf("%s: the reply's error is %v", tc.name, got.err)
+		}
+	}
+}
+
+// A reset that deleted the open session and could not replace it leaves the
+// chat on a session that no longer exists: it says so, and leaving it must
+// not remember it.
+func TestReset_DeletedButNotReplacedIsNotRememberedAgain(t *testing.T) {
+	m, _ := tcacheVisited(t) // sess-3 open and loaded
+
+	m = w1Deliver(m, sessionClearedMsg{sessionKey: "sess-3", err: fmt.Errorf("create failed"), deleted: true})
+
+	if !m.chatModel.sessionGone {
+		t.Error("the chat is not marked as being on a deleted session")
+	}
+	if got := tcacheTranscript(m); !strings.Contains(got, "Session deleted") || !strings.Contains(got, "create failed") {
+		t.Errorf("the chat does not say the session was deleted but not replaced: %q", got)
+	}
+
+	m = tcacheSelect(m, "sess-2")
+	if _, ok := m.transcripts.get("sess-3"); ok {
+		t.Error("leaving a chat on a deleted session remembered it again")
+	}
+}
+
+// A reset that deleted nothing leaves everything as it was.
+func TestReset_DeleteFailureKeepsTheChatAndItsTranscript(t *testing.T) {
+	m, _ := tcacheVisited(t) // sess-3 open and loaded
+
+	m = w1Deliver(m, sessionClearedMsg{sessionKey: "sess-3", err: fmt.Errorf("delete refused")})
+
+	if m.chatModel.sessionGone {
+		t.Error("a reset that deleted nothing marked the chat as being on a deleted session")
+	}
+	if got := tcacheTranscript(m); !strings.Contains(got, "transcript of sess-3") || !strings.Contains(got, "delete refused") {
+		t.Errorf("the chat lost its rows or does not show the failure: %q", got)
+	}
+
+	m = tcacheSelect(m, "sess-2")
+	if _, ok := m.transcripts.get("sess-3"); !ok {
+		t.Error("a session whose reset deleted nothing was not remembered on leaving it")
 	}
 }
 

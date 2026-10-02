@@ -356,9 +356,9 @@ func (m *chatModel) handleSlashCommand(text string) (handled bool, cmd tea.Cmd) 
 					// Create a new session to replace the deleted one.
 					newKey, err := b.CreateSession(context.Background(), agentID, "")
 					if err != nil {
-						return sessionClearedMsg{sessionKey: sessionKey, err: err}
+						return sessionClearedMsg{sessionKey: sessionKey, err: err, deleted: true}
 					}
-					return sessionClearedMsg{sessionKey: sessionKey, newSessionKey: newKey}
+					return sessionClearedMsg{sessionKey: sessionKey, newSessionKey: newKey, deleted: true}
 				}
 			},
 		}
@@ -413,7 +413,7 @@ func (m *chatModel) handleSlashCommand(text string) (handled bool, cmd tea.Cmd) 
 		// Replaces the chat, so queued messages would be dropped: gate it
 		// like every other navigation that does.
 		return true, m.gateNavigation("Starting a new session", true,
-			createSessionCmd(m.backend, m.agentID, m.agentName, m.modelID))
+			createSessionCmd(m.backend, m.agentID, m.agentName, m.modelID, m.sessionKey))
 	case "/sessions":
 		agentID := m.agentID
 		agentName := m.agentName

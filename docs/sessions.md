@@ -65,9 +65,10 @@ earlier.
 Two things keep the switch fast:
 
 - **`fetchHistory` trims before it renders.** It keeps the last `historyLimit` messages the
-  transcript shows and renders only those. Markdown rendering is the per-message cost (about
-  0.5 ms), so it must be bounded by the limit, not by what the gateway chose to send. The download
-  and its parse are not reduced.
+  transcript shows and renders only those. Markdown rendering is the cost (about 2.4 ms per 1,000
+  characters of code-heavy Markdown at width 100: 19 ms for 8,000 characters, 1.15 s for 500,000,
+  which is the size `chat.history` is now asked to allow per message), so it must be bounded by
+  the limit, not by what the gateway chose to send. The download and its parse are not reduced.
 - **`transcriptCache` remembers the last 10 sessions.** A revisit paints from it at once, and the
   history load that `Init` still issues replaces those rows.
 
@@ -83,14 +84,59 @@ The rules that make the cache safe, each of which was a defect in an earlier dra
 - **A load older than a merged refresh is discarded.** Otherwise a slow initial load overwrites
   the turn that a later refresh brought in.
 - **An empty reply still replaces.** A session emptied elsewhere must not keep its old rows.
-- **Copy in and out.** `chatModel.setSize` re-renders rows in place; a shared slice would let one
-  chat's resize rewrite another's remembered transcript.
-- **Not remembered:** a chat that never loaded, a cron transcript, an archived or deleted session,
-  the live rows of an unfinished turn, and a chat left over from a previous connection (session
-  keys such as `main` repeat across gateways). A connection change clears the cache.
+- **Copy in and out.** A re-render rewrites rows in place; a shared slice would let one chat's
+  resize rewrite another's remembered transcript.
+- **Not remembered:** a chat that never loaded, a cron transcript, an archived or deleted session
+  (including one a `/reset` deleted and could not replace), the live rows of an unfinished turn,
+  and a chat left over from a previous connection (session keys such as `main` repeat across
+  gateways). A connection change clears the cache. A `/reset` drops its session exactly when the
+  delete step went through (`sessionClearedMsg.deleted`).
 
-Session-scoped replies (`historyLoadedMsg`, `historyRefreshMsg`, `sessionClearedMsg`) are routed by
-`AppModel.deliverToChat` ahead of the view-state switch. The view-state routing drops them when
+## Why Markdown is never rendered on the UI goroutine
+
+A resize, a theme change and a switch to a remembered session all used to re-render every
+rendered row inside `Update`. At the cost above that froze the UI for as long as the transcript
+was large, on every resize.
+
+- **Every rendered row carries a `renderStamp`** (wrap width and theme). A row whose stamp is not
+  the chat's (`chatModel.stamp()`, computed from its width and preferences, never stored) is
+  stale. There is no per-chat "rendered at" value: one was tried in design and could not
+  represent a history reply rendered before a resize landing after it.
+- **`AppModel.Update` is the only place a re-render is asked for.** After every message it calls
+  `chatModel.rerenderCmd()`, which returns a command when a row is stale and none is in flight for
+  the current stamp. Nothing else has to remember to ask, and `setSize`, `seedHistory` and the
+  message handlers render nothing.
+- **The result is matched by source text, never by index.** A result for a stamp the chat has left
+  changes nothing; rows it did not cover stay stale and the next `Update` asks again. A source the
+  renderer rejects is stamped so it is not asked for twice.
+- **Every command builds its own renderer.** `chatModel.newRenderer` is a factory, called inside
+  the command's goroutine. glamour v2.0.1 documents no concurrency guarantee for `TermRenderer`,
+  and one instance used from two goroutines was measured to crash (nil dereference in
+  `RenderBytes`) and to race (`ansi.BlockStack`). The history fetch and the post-turn refresh used
+  to share `chatModel.renderer`; that renderer now stays on the UI goroutine.
+- **One exception:** a cron transcript renders its run summaries synchronously when it opens.
+  They are short, and it stamps them at the pane's width so nothing follows.
+
+A chat that was never sized wraps at the minimum (20 columns). One opened while parked behind a
+cron transcript is therefore rendered narrow, and re-rendered when it is restored.
+
+## Where the outcome of a session command lands
+
+`/new`, `/archive`, `/delete` and `/rename` answer after a gateway round trip, and the operator
+may have moved by then. `AppModel.sessionChat(key)` finds the chat on a session — the open one, or
+the one parked behind a cron transcript — and every outcome is applied there:
+
+- The outcome is written to that chat, or dropped if no chat is on the session any more.
+- A follow-up that replaces the chat (the neighbour after a removal, the session `/new` created)
+  carries `inPlaceOf` and replaces that chat where it is. It never changes the view or the focus.
+  If the chat is gone, the new session is listed in the sidebar and nothing is opened.
+- A chat opened in place while it cannot receive unkeyed replies (parked, another view showing, or
+  the sidebar focused) loads its history at once and holds the rest of its startup
+  (`initPending`) until it has focus; issued early, those replies would be written into whatever
+  the operator was looking at.
+
+Session-scoped replies (`historyLoadedMsg`, `historyRefreshMsg`, `sessionClearedMsg`,
+`transcriptRerenderedMsg`) are routed by `AppModel.deliverToChat` ahead of the view-state switch. The view-state routing drops them when
 the operator is in another view or has the sidebar focused, which used to leave a chat on
 "loading" for good; with a cache it would leave stale rows with nothing to show they were stale.
 Each carries the session it belongs to, and a chat ignores one for another session.

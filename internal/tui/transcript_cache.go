@@ -7,10 +7,10 @@ const transcriptCacheCapacity = 10
 // revisit can paint before the gateway answers. It is least-recently-used,
 // keyed by session key, and holds only server-canonical rows (gen 0).
 //
-// It is written in exactly one way: AppModel.stashChat, when the open chat
-// is replaced. History replies never write it, so it cannot disagree with
-// what the chat was showing. Rows are copied in and out: chatModel.setSize
-// re-renders rows in place, and a shared slice would let one chat's resize
+// It is written in exactly one way: AppModel.stashChat, when a chat is
+// replaced. History replies never write it, so it cannot disagree with
+// what the chat was showing. Rows are copied in and out: a re-render
+// rewrites rows in place, and a shared slice would let one chat's resize
 // rewrite another's remembered transcript.
 //
 // Held by pointer on AppModel so the value-copied model keeps one cache.

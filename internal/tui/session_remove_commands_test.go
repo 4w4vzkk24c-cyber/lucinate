@@ -217,6 +217,223 @@ func TestSessionRemove_ArchiveUnavailableOnABackendWithoutIt(t *testing.T) {
 	}
 }
 
+// sessionParkBehindTranscript puts the open chat behind a cron transcript,
+// the way opening one from the crons list does.
+func sessionParkBehindTranscript(m AppModel) AppModel {
+	m.cronsReturnChat, m.cronsReturnValid = m.chatModel, true
+	m.chatModel = newChatModel(m.backend, "", "agent-1", "Scout", "", m.prefs, true, "", "", false)
+	m.chatModel.transcript = true
+	m.chatModel.historyLoading = false
+	m.chatModel.messages = []chatMessage{{role: "assistant", content: "cron run summary"}}
+	m.applyChatLayout()
+	return m
+}
+
+// sessionTranscriptUntouched fails the test if the open cron transcript was
+// changed or replaced.
+func sessionTranscriptUntouched(t *testing.T, m AppModel) {
+	t.Helper()
+	open := m.chatModel
+	if !open.transcript || open.sessionKey != "" || len(open.messages) != 1 || open.messages[0].content != "cron run summary" {
+		t.Errorf("the open cron transcript was changed: transcript=%v key=%q rows=%+v", open.transcript, open.sessionKey, open.messages)
+	}
+}
+
+func sessionParkedTranscript(m AppModel) string {
+	m.cronsReturnChat.updateViewport()
+	return ansi.Strip(strings.Join(m.cronsReturnChat.selLines, "\n"))
+}
+
+// The outcome of a removal goes to the chat it was issued from. When that
+// chat is parked behind a cron transcript, it is the one moved to a
+// neighbour, and the transcript the operator is reading stays.
+func TestSessionRemove_OutcomeReachesTheParkedChat(t *testing.T) {
+	m, _ := removeApp(t) // sess-2 open
+	m = removeAsk(t, m, "/delete")
+	late := removeConfirmed(t, &m)
+	m = sessionParkBehindTranscript(m)
+
+	m = w1Pump(m, late, time.Second)
+
+	sessionTranscriptUntouched(t, m)
+	if !m.cronsReturnValid {
+		t.Fatal("the parked chat was discarded")
+	}
+	if got := m.cronsReturnChat.sessionKey; got != "sess-3" {
+		t.Errorf("the parked chat is on %q after its session was deleted, want the neighbour sess-3", got)
+	}
+	if m.cronsReturnChat.sessionGone {
+		t.Error("the chat that replaced the parked one is marked as on a deleted session")
+	}
+	if m.state != viewChat {
+		t.Errorf("the view changed to %v", m.state)
+	}
+}
+
+func TestSessionRemove_FailureIsWrittenToTheParkedChat(t *testing.T) {
+	m, calls := removeApp(t)
+	calls.err = errors.New("gateway refused: session is busy")
+	m = removeAsk(t, m, "/archive")
+	late := removeConfirmed(t, &m)
+	m = sessionParkBehindTranscript(m)
+
+	m = w1Pump(m, late, time.Second)
+
+	sessionTranscriptUntouched(t, m)
+	if m.cronsReturnChat.sessionKey != "sess-2" || m.cronsReturnChat.sessionGone {
+		t.Errorf("a failed archive moved or retired the parked chat: key %q gone=%v", m.cronsReturnChat.sessionKey, m.cronsReturnChat.sessionGone)
+	}
+	if got := sessionParkedTranscript(m); !strings.Contains(got, "gateway refused: session is busy") {
+		t.Errorf("the failure is not shown in the parked chat: %q", got)
+	}
+}
+
+// The last session, removed while its chat is parked: the session created
+// in its place opens in the parked chat.
+func TestSessionRemove_LastSessionParkedGetsANewSessionInPlace(t *testing.T) {
+	m, calls := removeApp(t)
+	m.sessionsModel, _ = m.sessionsModel.Update(sessionsLoadedMsg{sessions: []sessionItem{{key: "sess-2", title: "Only"}}})
+	m = removeAsk(t, m, "/delete")
+	late := removeConfirmed(t, &m)
+	m = sessionParkBehindTranscript(m)
+
+	m = w1Pump(m, late, time.Second)
+
+	sessionTranscriptUntouched(t, m)
+	if calls.created != 1 || m.cronsReturnChat.sessionKey != "created-session" {
+		t.Errorf("created %d sessions and the parked chat is on %q, want it on the one new session", calls.created, m.cronsReturnChat.sessionKey)
+	}
+}
+
+// A removal that lands while the operator is in another view moves the chat
+// and leaves the operator where they are.
+func TestSessionRemove_OutcomeDoesNotChangeTheView(t *testing.T) {
+	m, _ := removeApp(t)
+	m = removeAsk(t, m, "/delete")
+	late := removeConfirmed(t, &m)
+	m.state = viewConfig
+	m.sidebarFocus = true
+
+	m = w1Pump(m, late, time.Second)
+
+	if m.state != viewConfig {
+		t.Errorf("a removal that landed in the config view moved the operator to view %v", m.state)
+	}
+	if !m.sidebarFocus {
+		t.Error("a removal outcome took focus from the sidebar")
+	}
+	if m.chatModel.sessionKey != "sess-3" {
+		t.Errorf("the chat is on %q, want the neighbour sess-3", m.chatModel.sessionKey)
+	}
+}
+
+// sessionStartupReplies runs a command tree and reports whether it holds
+// the unkeyed part of a chat's startup (skill discovery stands for it).
+func sessionStartupReplies(cmd tea.Cmd) bool {
+	if cmd == nil {
+		return false
+	}
+	switch msg := cmd().(type) {
+	case skillsDiscoveredMsg:
+		return true
+	case tea.BatchMsg:
+		for _, c := range msg {
+			if sessionStartupReplies(c) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// A chat opened in place while it cannot hear unkeyed replies (parked, or
+// the operator in another view, or the sidebar focused) loads its history at
+// once and holds the rest of its startup until it has focus. Issued early,
+// those replies would be written into whatever the operator is looking at.
+func TestSessionSelect_InPlaceStartupWaitsForFocus(t *testing.T) {
+	follow := sessionSelectedMsg{sessionKey: "sess-3", agentName: "Scout", modelID: "model-1", inPlaceOf: "sess-2"}
+
+	t.Run("parked behind a cron transcript", func(t *testing.T) {
+		m, _ := removeApp(t)
+		m = sessionParkBehindTranscript(m)
+
+		next, cmd := m.Update(follow)
+		m = next.(AppModel)
+		if sessionStartupReplies(cmd) {
+			t.Fatal("a chat opened while parked issued its unkeyed startup at once")
+		}
+		if !m.cronsReturnChat.initPending {
+			t.Fatal("the parked chat does not know its startup is still owed")
+		}
+
+		m.cronsReturn = viewChat
+		next, cmd = m.Update(goBackFromCronsMsg{})
+		m = next.(AppModel)
+		if !sessionStartupReplies(cmd) || m.chatModel.initPending {
+			t.Error("the restored chat did not finish starting up once it had focus")
+		}
+		_, cmd = m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+		if sessionStartupReplies(cmd) {
+			t.Error("the startup was issued a second time")
+		}
+	})
+
+	t.Run("the sidebar has focus", func(t *testing.T) {
+		m, _ := removeApp(t)
+		m.sidebarFocus = true
+
+		next, cmd := m.Update(follow)
+		m = next.(AppModel)
+		if sessionStartupReplies(cmd) || !m.chatModel.initPending {
+			t.Fatal("a chat opened under a focused sidebar issued its unkeyed startup at once")
+		}
+
+		m.sidebarFocus = false
+		next, cmd = m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+		if !sessionStartupReplies(cmd) || next.(AppModel).chatModel.initPending {
+			t.Error("the chat did not finish starting up once it had focus")
+		}
+	})
+
+	t.Run("the operator is in another view", func(t *testing.T) {
+		m, _ := removeApp(t)
+		m.state = viewConfig
+		m.configReturn = viewChat
+
+		next, cmd := m.Update(follow)
+		m = next.(AppModel)
+		if sessionStartupReplies(cmd) || !m.chatModel.initPending {
+			t.Fatal("a chat opened while the config view is showing issued its unkeyed startup at once")
+		}
+
+		next, cmd = m.Update(goBackFromConfigMsg{})
+		if !sessionStartupReplies(cmd) || next.(AppModel).chatModel.initPending {
+			t.Error("the chat did not finish starting up once the chat view was showing")
+		}
+	})
+
+	t.Run("the chat has focus", func(t *testing.T) {
+		m, _ := removeApp(t)
+
+		next, cmd := m.Update(follow)
+		if !sessionStartupReplies(cmd) || next.(AppModel).chatModel.initPending {
+			t.Error("a chat opened in place with focus did not start up at once")
+		}
+	})
+}
+
+// The follow-up switch names the chat it replaces. If that chat is gone by
+// the time it lands, nothing is opened.
+func TestSessionSelect_InPlaceOfAChatThatIsGoneOpensNothing(t *testing.T) {
+	m, _ := removeApp(t) // sess-2 open
+
+	m = w1Deliver(m, sessionSelectedMsg{sessionKey: "sess-3", agentName: "Scout", modelID: "model-1", inPlaceOf: "sess-9"})
+
+	if m.chatModel.sessionKey != "sess-2" {
+		t.Errorf("a follow-up for a chat that is gone replaced the open chat with %q", m.chatModel.sessionKey)
+	}
+}
+
 func TestSessionRemove_CommandsAreListedAndComplete(t *testing.T) {
 	for _, command := range []string{"/archive", "/delete"} {
 		if !strings.Contains(helpBody, command+" — ") {

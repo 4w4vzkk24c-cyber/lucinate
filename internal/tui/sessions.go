@@ -446,8 +446,9 @@ const newSessionTimeout = 15 * time.Second
 // reports the outcome as newSessionCreatedMsg. Shared by the sessions
 // browser's "new session" action and the chat's /new command. The key is
 // the creation time, which is what the gateway shows until a title is
-// derived.
-func createSessionCmd(b backend.Backend, agentID, agentName, modelID string) tea.Cmd {
+// derived. inPlaceOf is carried onto the reply: the session whose chat the
+// new one replaces, or "" from the browser.
+func createSessionCmd(b backend.Backend, agentID, agentName, modelID, inPlaceOf string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), newSessionTimeout)
 		defer cancel()
@@ -458,6 +459,7 @@ func createSessionCmd(b backend.Backend, agentID, agentName, modelID string) tea
 			agentName:  agentName,
 			modelID:    modelID,
 			err:        err,
+			inPlaceOf:  inPlaceOf,
 		}
 	}
 }
@@ -607,7 +609,7 @@ func (m sessionsModel) TriggerAction(id string) (sessionsModel, tea.Cmd) {
 		if m.loading || m.err != nil {
 			return m, nil
 		}
-		return m, createSessionCmd(m.backend, m.agentID, m.agentName, m.modelID)
+		return m, createSessionCmd(m.backend, m.agentID, m.agentName, m.modelID, "")
 	case "back":
 		return m, func() tea.Msg { return goBackFromSessionsMsg{} }
 	case "retry":

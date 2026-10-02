@@ -132,6 +132,30 @@ func TestSessionRename_OutcomeForALeftSessionStaysOutOfTheOpenChat(t *testing.T)
 	}
 }
 
+// A rename outcome that lands while its chat is parked behind a cron
+// transcript is written to that chat, not lost and not put in the transcript.
+func TestSessionRename_OutcomeReachesTheParkedChat(t *testing.T) {
+	for name, renameErr := range map[string]error{"success": nil, "failure": errors.New("gateway refused")} {
+		m, _ := renameApp(t, renameErr)
+		handled, cmd := m.chatModel.handleSlashCommand("/rename Quarterly Plan")
+		if !handled || cmd == nil {
+			t.Fatal("/rename returned no command")
+		}
+		m = sessionParkBehindTranscript(m)
+
+		m = w1Pump(m, cmd, time.Second)
+
+		sessionTranscriptUntouched(t, m)
+		want := "Quarterly Plan"
+		if renameErr != nil {
+			want = "gateway refused"
+		}
+		if got := sessionParkedTranscript(m); !strings.Contains(got, want) {
+			t.Errorf("%s: the parked chat was not told (%q): %q", name, want, got)
+		}
+	}
+}
+
 // A long title is cut by display width, never mid-character: the old cap
 // sliced bytes, which split a CJK or emoji title into invalid UTF-8.
 func TestSidebarTitle_LongTitleStaysValidUTF8(t *testing.T) {

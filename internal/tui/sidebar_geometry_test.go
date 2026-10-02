@@ -14,6 +14,7 @@ import (
 	"charm.land/bubbles/v2/list"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/a3tai/openclaw-go/protocol"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -103,6 +104,54 @@ func TestSidebarSelection_DragSelectsTheTextUnderThePointer(t *testing.T) {
 		if got != "bravo" {
 			t.Errorf("width=%d: dragging across \"bravo\" at screen x=%d selected %q", width, x, got)
 		}
+	}
+}
+
+// sidebarGeometryDrag drags across word on screen and returns what the chat
+// selected.
+func sidebarGeometryDrag(t *testing.T, m AppModel, word string) string {
+	t.Helper()
+	x, y := sidebarGeometryLocate(t, m, word)
+	m = w1Deliver(m, tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+	m = w1Deliver(m, tea.MouseMotionMsg{X: x + len(word) - 1, Y: y, Button: tea.MouseLeft})
+	return extractSelection(m.chatModel.selLines, m.chatModel.sel.anchor, m.chatModel.sel.head)
+}
+
+// A cron transcript sits beside the sidebar like any chat, and so does the
+// chat restored when the operator leaves it. Both were sized to the whole
+// terminal with no column offset, so a drag selected text one sidebar-width
+// to the right of the pointer.
+func TestSidebarSelection_CronTranscriptAndItsRestoreUsePaneGeometry(t *testing.T) {
+	m := sidebarGeometryApp(t, 140)
+	pane := m.chatModel.width
+
+	m = w1Deliver(m, cronTranscriptMsg{
+		job:       sampleJobs()[0],
+		agentName: "Scout",
+		runs:      []protocol.CronRunLogEntry{{Summary: "delta echo foxtrot"}},
+	})
+	if !m.chatModel.transcript {
+		t.Fatal("setup: the cron transcript did not open")
+	}
+	if m.chatModel.width != pane || m.chatModel.originX != m.sidebarWidth() {
+		t.Errorf("the cron transcript is %d wide at column %d, want the chat pane: %d wide at column %d",
+			m.chatModel.width, m.chatModel.originX, pane, m.sidebarWidth())
+	}
+	if got := sidebarGeometryDrag(t, m, "echo"); got != "echo" {
+		t.Errorf("dragging across \"echo\" in a cron transcript selected %q", got)
+	}
+
+	m.cronsReturn = viewChat // showCronsMsg records this when crons opens from the chat
+	m = w1Deliver(m, goBackFromCronsMsg{})
+	if m.chatModel.transcript {
+		t.Fatal("setup: leaving the crons list did not restore the chat")
+	}
+	if m.chatModel.width != pane || m.chatModel.originX != m.sidebarWidth() {
+		t.Errorf("the restored chat is %d wide at column %d, want %d wide at column %d",
+			m.chatModel.width, m.chatModel.originX, pane, m.sidebarWidth())
+	}
+	if got := sidebarGeometryDrag(t, m, "bravo"); got != "bravo" {
+		t.Errorf("dragging across \"bravo\" in the restored chat selected %q", got)
 	}
 }
 

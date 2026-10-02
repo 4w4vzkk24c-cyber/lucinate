@@ -10,6 +10,7 @@ import (
 	"github.com/a3tai/openclaw-go/protocol"
 
 	"github.com/lucinate-ai/lucinate/internal/backend"
+	"github.com/lucinate-ai/lucinate/internal/config"
 )
 
 // historyResponse is the structure of the chat.history RPC response.
@@ -67,10 +68,11 @@ func (hm *historyMessage) UnmarshalJSON(data []byte) error {
 func (m chatModel) loadHistory() tea.Cmd {
 	sessionKey := m.sessionKey
 	b := m.backend
-	renderer := m.historyRenderer()
+	job := m.renderJob()
 	limit := m.historyLimit
 	return func() tea.Msg {
-		msgs, err := fetchHistory(b, sessionKey, renderer, limit)
+		msgs, err := fetchHistory(b, sessionKey, job.renderer(), limit)
+		stampRendered(msgs, job.stamp)
 		return historyLoadedMsg{sessionKey: sessionKey, messages: msgs, err: err}
 	}
 }
@@ -90,10 +92,11 @@ func (m chatModel) loadHistory() tea.Cmd {
 func (m chatModel) refreshHistoryAt(boundary uint64) tea.Cmd {
 	sessionKey := m.sessionKey
 	b := m.backend
-	renderer := m.historyRenderer()
+	job := m.renderJob()
 	limit := m.historyLimit
 	return func() tea.Msg {
-		msgs, err := fetchHistory(b, sessionKey, renderer, limit)
+		msgs, err := fetchHistory(b, sessionKey, job.renderer(), limit)
+		stampRendered(msgs, job.stamp)
 		return historyRefreshMsg{sessionKey: sessionKey, messages: msgs, boundary: boundary, err: err}
 	}
 }
@@ -104,15 +107,125 @@ type markdownRenderer interface {
 	Render(in string) (string, error)
 }
 
-// historyRenderer returns the model's renderer as a markdownRenderer, or a
-// nil interface when there is none. Assigning a nil *glamour.TermRenderer
-// straight to the interface would make a non-nil interface holding a nil
-// pointer, and fetchHistory's nil check would pass it through to a crash.
-func (m chatModel) historyRenderer() markdownRenderer {
-	if m.renderer == nil {
+// renderStamp is what a rendered row's content depends on besides its
+// source: the wrap width and the theme. Comparable, so two stamps are equal
+// exactly when a row rendered at one needs no re-render at the other.
+type renderStamp struct {
+	width int
+	theme config.ThemePreferences
+}
+
+// renderJob is what a command needs to render Markdown off the UI
+// goroutine: the stamp to render at and the factory to build a renderer
+// with. The command calls renderer() inside its own closure, so every
+// command renders with a renderer no other goroutine holds.
+type renderJob struct {
+	stamp   renderStamp
+	factory func(renderStamp) markdownRenderer
+}
+
+// renderer builds this job's private renderer, or returns nil when the chat
+// has no factory or the factory has none to give.
+func (j renderJob) renderer() markdownRenderer {
+	if j.factory == nil {
 		return nil
 	}
-	return m.renderer
+	return j.factory(j.stamp)
+}
+
+// renderJob captures the chat's current stamp and factory for a command.
+func (m chatModel) renderJob() renderJob {
+	return renderJob{stamp: m.stamp(), factory: m.newRenderer}
+}
+
+// stampRendered records s on every rendered row of rows.
+func stampRendered(rows []chatMessage, s renderStamp) {
+	for i := range rows {
+		if rows[i].rendered && rows[i].raw != "" {
+			rows[i].stamp = s
+		}
+	}
+}
+
+// staleAt reports whether the row was rendered at a stamp other than s.
+func (c chatMessage) staleAt(s renderStamp) bool {
+	return c.rendered && c.raw != "" && c.stamp != s
+}
+
+// rerenderCmd returns the command that re-renders the chat's stale rows at
+// its current stamp, or nil when there are none or one is already in flight
+// for that stamp. AppModel.Update is its only caller: every path that can
+// make a row stale (a resize, a theme change, a seed from the cache, a
+// history reply rendered before a resize) ends there, so none of them
+// renders on the UI goroutine and none has to remember to ask.
+func (m *chatModel) rerenderCmd() tea.Cmd {
+	stamp := m.stamp()
+	if m.newRenderer == nil || m.rerenderFor == stamp {
+		return nil
+	}
+	seen := map[string]bool{}
+	var raws []string
+	for i := range m.messages {
+		if raw := m.messages[i].raw; m.messages[i].staleAt(stamp) && !seen[raw] {
+			seen[raw] = true
+			raws = append(raws, raw)
+		}
+	}
+	if len(raws) == 0 {
+		return nil
+	}
+	m.rerenderFor = stamp
+	sessionKey := m.sessionKey
+	job := m.renderJob()
+	return func() tea.Msg { return rerenderRows(sessionKey, job, raws) }
+}
+
+// rerenderRows renders each source with the job's private renderer. A
+// source that cannot be rendered is reported as failed, so the chat can
+// stamp its row and stop asking.
+func rerenderRows(sessionKey string, job renderJob, raws []string) transcriptRerenderedMsg {
+	out := transcriptRerenderedMsg{
+		sessionKey: sessionKey,
+		stamp:      job.stamp,
+		rendered:   make(map[string]string, len(raws)),
+		failed:     map[string]bool{},
+	}
+	renderer := job.renderer()
+	for _, raw := range raws {
+		if renderer == nil {
+			out.failed[raw] = true
+			continue
+		}
+		content, err := renderer.Render(raw)
+		if err != nil {
+			out.failed[raw] = true
+			continue
+		}
+		out.rendered[raw] = strings.TrimSpace(content)
+	}
+	return out
+}
+
+// applyRerender takes a re-render result into the chat. A result for a
+// stamp the chat has moved on from changes no row; the rows stay stale and
+// the next Update issues a fresh command.
+func (m *chatModel) applyRerender(msg transcriptRerenderedMsg) {
+	m.rerenderFor = renderStamp{}
+	if msg.stamp != m.stamp() {
+		return
+	}
+	for i := range m.messages {
+		row := &m.messages[i]
+		if !row.staleAt(msg.stamp) {
+			continue
+		}
+		if content, ok := msg.rendered[row.raw]; ok {
+			row.content = content
+			row.stamp = msg.stamp
+		} else if msg.failed[row.raw] {
+			row.stamp = msg.stamp
+		}
+	}
 }
 
 // fetchHistory loads a session's history and returns the rows the

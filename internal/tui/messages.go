@@ -22,6 +22,11 @@ type chatMessage struct {
 	rendered      bool  // true if content has been glamour-rendered (contains ANSI codes)
 	timestampMs   int64 // unix millis; imports and live sends carry it; "separator" rows (crons view) label run times
 
+	// stamp is the wrap width and theme content was rendered at, set
+	// wherever rendered is set. A rendered row whose stamp differs from
+	// the chat's is stale and is re-rendered off the UI goroutine.
+	stamp renderStamp
+
 	// gen is the chatModel.gen counter at the moment this row was
 	// appended. It partitions the message list into a "history-side"
 	// portion (rows whose gen ≤ the refresh boundary, replaced from
@@ -252,11 +257,17 @@ type showSessionsMsg struct {
 // the AppModel falls back to the session view's known agentID;
 // crossviews like the cron browser populate it explicitly so the chat
 // model is constructed with the right agent context.
+//
+// inPlaceOf, when set, names the session whose chat this one replaces: the
+// follow-up to a session command (/archive, /delete). The chat on that
+// session is replaced wherever it is, the view and focus are left alone,
+// and if no chat is on it any more nothing is opened.
 type sessionSelectedMsg struct {
 	sessionKey string
 	agentID    string
 	agentName  string
 	modelID    string
+	inPlaceOf  string
 }
 
 // cronTranscriptMsg opens a read-only transcript view for a cron job
@@ -278,12 +289,26 @@ type sessionsLoadedMsg struct {
 	err      error
 }
 
-// newSessionCreatedMsg is returned when a new session is created from the browser.
+// newSessionCreatedMsg is returned when a new session is created, from the
+// browser or from a chat. inPlaceOf has the meaning it has on
+// sessionSelectedMsg: set by /new and by a removal that left no session to
+// move to, empty from the browser.
 type newSessionCreatedMsg struct {
 	sessionKey string
 	agentName  string
 	modelID    string
 	err        error
+	inPlaceOf  string
+}
+
+// transcriptRerenderedMsg carries a chat's stale rendered rows, rendered
+// again at stamp by a command. rendered maps a row's Markdown source to its
+// new content; failed holds the sources the renderer rejected.
+type transcriptRerenderedMsg struct {
+	sessionKey string
+	stamp      renderStamp
+	rendered   map[string]string
+	failed     map[string]bool
 }
 
 // showConfigMsg signals the AppModel to switch to the config view.
@@ -340,11 +365,15 @@ type sessionCompactedMsg struct{ err error }
 
 // sessionClearedMsg is returned after clearing (deleting) a session.
 // sessionKey is the session that was reset: the outcome applies to that
-// chat only, and its remembered transcript is dropped.
+// chat only. /reset is delete-then-recreate; deleted reports whether the
+// delete step went through, so it is true on success and when only the
+// recreate step failed, and the remembered transcript is dropped exactly
+// when it is true.
 type sessionClearedMsg struct {
 	sessionKey    string
 	err           error
 	newSessionKey string
+	deleted       bool
 }
 
 // sessionRenamedMsg reports the outcome of /rename. sessionKey is the

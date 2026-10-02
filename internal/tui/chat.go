@@ -180,8 +180,10 @@ type chatModel struct {
 	historyBrowseValue string // textarea contents last placed by history navigation; lets repeated up/down keep walking until the user edits
 	width              int
 	height             int
-	renderer           *glamour.TermRenderer
-	stats              *sessionStats
+	renderer           *glamour.TermRenderer              // the UI goroutine's renderer; never handed to a command
+	newRenderer        func(renderStamp) markdownRenderer // builds a command's private renderer; tests replace it to count renders
+	rerenderFor        renderStamp                        // stamp of the re-render in flight; the zero value when there is none
+	stats           *sessionStats
 	modelID            string
 	promptTokens       int // input + cache read + cache write for the latest turn (a per-session snapshot, not cumulative); 0 until first sessions.list refresh
 	contextWindow      int // model context capacity for the active session; 0 when unknown
@@ -204,6 +206,7 @@ type chatModel struct {
 	historyLoading     bool   // true while the initial history fetch is in flight; gates the placeholder in updateViewport
 	seeded             bool   // history was painted from the transcript cache at open (seedHistory); the load that follows replaces the gen-0 rows instead of prepending
 	refreshMerged      bool   // a historyRefreshMsg has merged on this model; an initial load arriving after it is older and is discarded
+	initPending        bool   // opened while it could not receive unkeyed replies; initRest is issued once it has focus
 	sessionGone        bool   // the session was archived or deleted; the transcript cache must not remember this chat when it is replaced
 	thinkingLevel      string // current thinking level; "" means not set / using gateway default
 	connState          ConnStateMsg
@@ -383,8 +386,9 @@ func (m *chatModel) mergeHistoryRefresh(server []chatMessage, boundary uint64) {
 
 // seedHistory paints the chat from rows remembered by the transcript cache,
 // before the gateway has answered. The rows are server-canonical (gen 0);
-// the history load that Init issues replaces them. Call it before the chat
-// is sized: setSize re-wraps rendered rows to the pane.
+// the history load that Init issues replaces them. The rows are painted as they
+// were rendered; any whose stamp is not this chat's are re-rendered by the
+// command AppModel.Update issues.
 func (m *chatModel) seedHistory(rows []chatMessage) {
 	m.messages = rows
 	m.seeded = true
@@ -555,6 +559,7 @@ func newChatModel(b backend.Backend, sessionKey, agentID, agentName, modelID str
 		agentID:            agentID,
 		agentName:          agentName,
 		renderer:           renderer,
+		newRenderer:        themedMarkdownRenderer,
 		modelID:            modelID,
 		prefs:              prefs,
 		palette:            &pal,
@@ -576,9 +581,16 @@ func newChatModel(b backend.Backend, sessionKey, agentID, agentName, modelID str
 }
 
 func (m chatModel) Init() tea.Cmd {
+	return tea.Batch(m.loadHistory(), m.initRest())
+}
+
+// initRest is everything Init starts besides the history load. Unlike
+// history, these replies carry no session and reach the chat only while it
+// has focus, so AppModel holds them back (initPending) for a chat that is
+// opened while it is parked or the operator is elsewhere.
+func (m chatModel) initRest() tea.Cmd {
 	return tea.Batch(
 		textarea.Blink,
-		m.loadHistory(),
 		m.loadStats(),
 		m.loadContextUsage(),
 		func() tea.Msg { return skillsDiscoveredMsg{skills: discoverSkills()} },
@@ -876,13 +888,30 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 			slog.Debug("dropped a reset outcome for another session", "for", msg.sessionKey, "open", m.sessionKey)
 			return m, nil
 		}
-		if msg.err != nil {
+		switch {
+		case msg.err != nil && msg.deleted:
+			// The session is gone and nothing replaced it: this chat is
+			// on a dead session, and must not be remembered as one.
+			m.sessionGone = true
+			m.replacePendingSystem(chatMessage{role: "system", errMsg: fmt.Sprintf("Session deleted, but a new one could not be started: %v", msg.err)})
+		case msg.err != nil:
 			m.replacePendingSystem(chatMessage{role: "system", errMsg: fmt.Sprintf("clear session failed: %v", msg.err)})
-		} else {
+		default:
 			m.sessionKey = msg.newSessionKey
 			m.messages = nil
+			// A re-render in flight is addressed to the old key and will
+			// be dropped; forget it so it cannot block the next one.
+			m.rerenderFor = renderStamp{}
 			m.appendMessage(chatMessage{role: "system", content: "Session cleared. Starting fresh."})
 		}
+		m.updateViewport()
+		return m, nil
+
+	case transcriptRerenderedMsg:
+		if msg.sessionKey != m.sessionKey {
+			return m, nil
+		}
+		m.applyRerender(msg)
 		m.updateViewport()
 		return m, nil
 
@@ -1648,32 +1677,36 @@ func (m *chatModel) drainQueueOpt(refresh bool) tea.Cmd {
 	return tea.Batch(m.sendMessage(sent), m.ensureSpinnerTicking())
 }
 
-func (m *chatModel) setSize(w, h int) {
-	m.width = w
-	m.height = h
-
-	// Recreate the glamour renderer with the new wrap width. In narrow mode the
-	// body uses the full content width (no inline prefix), so size accordingly.
+// wrapWidth is the width Markdown is wrapped to: the message width less the
+// inline prefix, or all of it in the narrow layout, and never under 20. A
+// chat that has not been sized has width 0 and so wraps at 20.
+func (m chatModel) wrapWidth() int {
 	contentWidth := m.messageWidth()
 	wrapWidth := contentWidth - m.prefixWidth()
 	if m.narrowLayout() {
 		wrapWidth = contentWidth
 	}
-	if wrapWidth < 20 {
-		wrapWidth = 20
-	}
-	renderer, themeWarn := newThemedRenderer(m.prefs, wrapWidth)
+	return max(wrapWidth, 20)
+}
+
+// stamp is what a row rendered now would be rendered at. It is computed,
+// never stored, so it cannot disagree with the chat's width or theme.
+func (m chatModel) stamp() renderStamp {
+	return renderStamp{width: m.wrapWidth(), theme: m.prefs.ThemeSettings()}
+}
+
+func (m *chatModel) setSize(w, h int) {
+	m.width = w
+	m.height = h
+
+	// Recreate the UI goroutine's renderer with the new wrap width. Rows
+	// already rendered are NOT re-rendered here: Markdown rendering costs
+	// milliseconds per thousand characters and this runs on the UI
+	// goroutine. They become stale (their stamp no longer matches) and
+	// rerenderCmd re-renders them in a command.
+	renderer, themeWarn := newThemedRenderer(m.prefs, m.wrapWidth())
 	if renderer != nil {
 		m.renderer = renderer
-		// Re-render any previously glamour-rendered messages so markdown
-		// reflows when the terminal is resized.
-		for i := range m.messages {
-			if m.messages[i].rendered && m.messages[i].raw != "" {
-				if out, rerr := m.renderer.Render(m.messages[i].raw); rerr == nil {
-					m.messages[i].content = strings.TrimSpace(out)
-				}
-			}
-		}
 	}
 	if themeWarn != "" {
 		m.notifications = append(m.notifications, notification{text: themeWarn, isError: true})

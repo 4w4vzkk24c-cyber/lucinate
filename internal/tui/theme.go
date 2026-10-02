@@ -41,6 +41,21 @@ var solarizedDarkStyle string
 //go:embed solarized_light.json
 var solarizedLightStyle string
 
+// themedMarkdownRenderer builds a renderer for one stamp. It is the factory
+// chat commands use: each command calls it inside its own goroutine and
+// never lets the result leave, because a glamour TermRenderer is not safe
+// to share between goroutines. A theme warning is not surfaced here;
+// chatModel.setSize reports it when it builds the UI goroutine's renderer.
+func themedMarkdownRenderer(s renderStamp) markdownRenderer {
+	theme := s.theme
+	renderer, _ := newThemedRenderer(config.Preferences{Theme: &theme}, s.width)
+	if renderer == nil {
+		// A nil *TermRenderer in the interface would pass a nil check.
+		return nil
+	}
+	return renderer
+}
+
 // newThemedRenderer builds the markdown renderer from the configured
 // theme at the given wrap width. A non-empty second return is a warning
 // the caller must surface (chatModel appends it to notifications) — the
