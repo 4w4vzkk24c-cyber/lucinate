@@ -2,6 +2,15 @@
 
 This file provides guidance to AI coding agents when working with code in this repository.
 
+## This fork is a house tool
+
+`zane/main` is Zane's fork and is a house TUI (operator decision, 2026-10-02): the
+`tui-engineering` skill governs its look, keys, architecture and tests, and where that skill
+and upstream's conventions disagree, the skill wins. The fork does not yet meet the house
+style; migrate in the order the skill gives for a tool that is not house style, one commit per
+step, with the tool working after each. Two deliberate deviations stand until Zane says
+otherwise: the sidebar's chess glyphs (`♛ ♕ ♟ ♙`) and the `🦚` / `🍋` message prefixes.
+
 ## Build & Development Commands
 
 ```bash
