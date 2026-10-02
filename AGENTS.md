@@ -9,7 +9,13 @@ This file provides guidance to AI coding agents when working with code in this r
 and upstream's conventions disagree, the skill wins. The fork does not yet meet the house
 style; migrate in the order the skill gives for a tool that is not house style, one commit per
 step, with the tool working after each. Two deliberate deviations stand until Zane says
-otherwise: the sidebar's chess glyphs (`♛ ♕ ♟ ♙`) and the `🦚` / `🍋` message prefixes.
+otherwise:
+
+- The sidebar's chess glyphs (`♛ ♕ ♟ ♙`) say what a session is. They sit beside a state word
+  (`RUN`, `DONE`, `FAIL`, `STOP`), never in place of one.
+- Transcript sender colours are cyan for the operator and yellow for the assistant (name and
+  the `▌` bar beside each message). The house palette gives those hues to `RUN` and stale;
+  in the transcript they mean who spoke and nothing else.
 
 ## Build & Development Commands
 

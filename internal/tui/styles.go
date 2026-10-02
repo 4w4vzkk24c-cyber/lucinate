@@ -23,6 +23,12 @@ var (
 	okClr    = lipgloss.Color("#859900") // Green — ended cleanly
 	staleClr = lipgloss.Color("#b58900") // Yellow — stopped by the operator
 
+	// Transcript sender colours (operator's choice, 2026-10-02): the name
+	// and the bar beside each message. These reuse two lamp hues in a
+	// different pane; in the transcript they mean who spoke, nothing else.
+	userSenderClr      = lipgloss.Color("#2aa198") // Cyan — the operator
+	assistantSenderClr = lipgloss.Color("#b58900") // Yellow — the assistant
+
 	// Header bar.
 	headerStyle = lipgloss.NewStyle().
 			Bold(true).
@@ -33,12 +39,12 @@ var (
 	// User message prefix.
 	userPrefixStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(userClr)
+			Foreground(userSenderClr)
 
 	// Assistant message prefix.
 	assistantPrefixStyle = lipgloss.NewStyle().
 				Bold(true).
-				Foreground(accent)
+				Foreground(assistantSenderClr)
 
 	// Streaming cursor.
 	cursorStyle = lipgloss.NewStyle().
@@ -121,7 +127,7 @@ var (
 	pendingPrefixStyle = lipgloss.NewStyle().
 				Italic(true).
 				Faint(true).
-				Foreground(userClr)
+				Foreground(userSenderClr)
 
 	// Pending (queued) message body — dimmed italic to match prefix.
 	pendingBodyStyle = lipgloss.NewStyle().

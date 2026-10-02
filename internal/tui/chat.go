@@ -1596,7 +1596,7 @@ func (m *chatModel) setSize(w, h int) {
 
 	// Recreate the glamour renderer with the new wrap width. In narrow mode the
 	// body uses the full content width (no inline prefix), so size accordingly.
-	contentWidth := w - 4
+	contentWidth := m.messageWidth()
 	wrapWidth := contentWidth - m.prefixWidth()
 	if m.narrowLayout() {
 		wrapWidth = contentWidth

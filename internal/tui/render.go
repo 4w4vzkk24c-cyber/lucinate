@@ -47,28 +47,31 @@ func (m *chatModel) updateViewport() {
 			b.WriteString(statusStyle.Render(buildSeparator(contentWidth, formatSeparatorLabel(msg.timestampMs, time.Now()))))
 
 		case "user":
-			prefixIndent, wrapWidth := m.writePrefix(&b, userPrefixStyle, "🦚")
+			var mb strings.Builder
+			prefixIndent, wrapWidth := m.writePrefix(&mb, userPrefixStyle, userLabel)
 			body := wordWrap(msg.content, wrapWidth)
-			b.WriteString(indentMultiline(body, prefixIndent))
+			mb.WriteString(indentMultiline(body, prefixIndent))
+			b.WriteString(barLines(mb.String(), userPrefixStyle))
 
 		case "assistant":
-			prefixIndent, wrapWidth := m.writePrefix(&b, assistantPrefixStyle, m.assistantLabel())
+			var mb strings.Builder
+			prefixIndent, wrapWidth := m.writePrefix(&mb, assistantPrefixStyle, m.assistantLabel())
 			if msg.errMsg != "" {
 				body := wordWrap(msg.errMsg, wrapWidth)
-				b.WriteString(errorStyle.Render(indentMultiline(body, prefixIndent)))
+				mb.WriteString(errorStyle.Render(indentMultiline(body, prefixIndent)))
 			} else {
 				if msg.thinking != "" {
-					b.WriteString(statusStyle.Render("◦ thinking"))
-					b.WriteString("\n")
+					mb.WriteString(statusStyle.Render("◦ thinking"))
+					mb.WriteString("\n")
 					thinkingBody := wordWrap(msg.thinking, wrapWidth)
-					b.WriteString(thinkingBodyStyle.Render(indentMultiline(thinkingBody, prefixIndent)))
-					b.WriteString("\n\n")
-					b.WriteString(prefixIndent)
+					mb.WriteString(thinkingBodyStyle.Render(indentMultiline(thinkingBody, prefixIndent)))
+					mb.WriteString("\n\n")
+					mb.WriteString(prefixIndent)
 				}
 				if msg.streaming {
 					body := wordWrap(msg.content, wrapWidth)
-					b.WriteString(indentMultiline(body, prefixIndent))
-					b.WriteString(cursorStyle.Render(spinnerFrames[m.spinnerFrame%len(spinnerFrames)]))
+					mb.WriteString(indentMultiline(body, prefixIndent))
+					mb.WriteString(cursorStyle.Render(spinnerFrames[m.spinnerFrame%len(spinnerFrames)]))
 				} else if msg.rendered {
 					// Glamour-rendered content is already wrapped and contains ANSI codes.
 					content := msg.content
@@ -77,12 +80,13 @@ func (m *chatModel) updateViewport() {
 						// line so the body sits flush under the prefix.
 						content = stripLeadingSpacesPerLine(content)
 					}
-					b.WriteString(indentMultiline(content, prefixIndent))
+					mb.WriteString(indentMultiline(content, prefixIndent))
 				} else {
 					body := wordWrap(msg.content, wrapWidth)
-					b.WriteString(indentMultiline(body, prefixIndent))
+					mb.WriteString(indentMultiline(body, prefixIndent))
 				}
 			}
+			b.WriteString(barLines(mb.String(), assistantPrefixStyle))
 
 		case "system":
 			if msg.errMsg != "" {
@@ -143,7 +147,44 @@ const narrowBodyMinWidth = 60
 // narrowLayout reports whether the viewport is too narrow for an inline
 // prefix to leave enough room for the message body.
 func (m *chatModel) narrowLayout() bool {
-	return (m.width - 4) - m.prefixWidth() < narrowBodyMinWidth
+	return m.messageWidth()-m.prefixWidth() < narrowBodyMinWidth
+}
+
+// A message is marked by a bar down its left edge and a name on its first
+// line, both in the sender's colour. The bar reaches the wrapped lines the
+// name does not; the name keeps the sender from being colour alone.
+const (
+	messageBar      = "▌"
+	messageBarCells = 1
+	// chatMarginCells is what the transcript keeps clear of the pane edges.
+	chatMarginCells = 4
+	// prefixGapCells separates the longest name from the message body.
+	prefixGapCells = 2
+	// userLabel names the operator's messages. This fork has one operator.
+	userLabel = "zane"
+	// mainAgentLabel names the main agent, whose id ("main") is not a name.
+	mainAgentLabel = "vesper"
+)
+
+// messageWidth is the width a message has to itself: the pane, less the
+// transcript margin and the sender bar.
+func (m *chatModel) messageWidth() int {
+	return m.width - chatMarginCells - messageBarCells
+}
+
+// barLines puts the sender bar at the start of every line of a rendered
+// message. A trailing empty line is left alone so a message that ends in a
+// newline does not grow a bar with nothing beside it.
+func barLines(s string, style lipgloss.Style) string {
+	bar := style.Render(messageBar)
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		if i == len(lines)-1 && line == "" && i > 0 {
+			continue
+		}
+		lines[i] = bar + line
+	}
+	return strings.Join(lines, "\n")
 }
 
 // writePrefix renders the message prefix into b and returns the per-continuation
@@ -151,55 +192,34 @@ func (m *chatModel) narrowLayout() bool {
 // followed by a literal newline (written outside the styled Render call to avoid
 // lipgloss right-padding the trailing empty line) so the body stacks beneath.
 func (m *chatModel) writePrefix(b *strings.Builder, style lipgloss.Style, name string) (indent string, wrapWidth int) {
-	contentWidth := m.width - 4
 	if m.narrowLayout() {
-		b.WriteString(style.Render(name + ":"))
+		b.WriteString(style.Render(name))
 		b.WriteString("\n")
-		return "", contentWidth
+		return "", m.messageWidth()
 	}
-	label := m.prefixLabel(name)
-	b.WriteString(style.Render(label))
-	return strings.Repeat(" ", len(label)), contentWidth - len(label)
+	b.WriteString(style.Render(m.prefixLabel(name)))
+	return strings.Repeat(" ", m.prefixWidth()), m.messageWidth() - m.prefixWidth()
 }
 
-// peacockDisplayWidth is the terminal column count of the 🦚 emoji
-// (U+1F99A, East Asian Wide — 2 columns in most terminal fonts).
-const peacockDisplayWidth = 2
-
-// displayWidth returns the terminal column count of a string, accounting
-// for the 🦚 and 🍋 emoji (4 UTF-8 bytes, 2 display columns each).
-// ASCII-only strings return their byte length unchanged.
-func displayWidth(s string) int {
-	return len(s) - 2*strings.Count(s, "🦚") - 2*strings.Count(s, "🍋")
-}
-
-// assistantLabel returns the speaker label for assistant messages: 🍋 for
-// the main agent, the agent name for every other agent (quorum-* etc.
-// keep their identity so multi-agent transcripts stay readable).
+// assistantLabel returns the speaker label for assistant messages: the main
+// agent's name, or the agent id for every other agent (quorum-* etc. keep
+// their identity so multi-agent transcripts stay readable).
 func (m *chatModel) assistantLabel() string {
 	if m.agentName == "main" {
-		return "🍋"
+		return mainAgentLabel
 	}
 	return m.agentName
 }
 
-// prefixWidth returns the shared width used for message prefixes so message
+// prefixWidth returns the shared width of the name column, so message
 // bodies start in the same column for both user and assistant rows.
 func (m *chatModel) prefixWidth() int {
-	w := peacockDisplayWidth + 1 // display width of "🦚:" and "🍋:"
-	if aw := displayWidth(m.assistantLabel() + ":"); aw > w {
-		w = aw
-	}
-	return w + 1
+	return max(ansi.StringWidth(userLabel), ansi.StringWidth(m.assistantLabel())) + prefixGapCells
 }
 
-// prefixLabel returns the displayed label for a message prefix.
+// prefixLabel returns name padded to the name column.
 func (m *chatModel) prefixLabel(name string) string {
-	label := name + ":"
-	for displayWidth(label) < m.prefixWidth()-1 {
-		label += " "
-	}
-	return label + " "
+	return name + strings.Repeat(" ", max(m.prefixWidth()-ansi.StringWidth(name), 0))
 }
 
 // formatStatsTable renders session stats as a formatted table.
@@ -488,9 +508,11 @@ func (m *chatModel) renderPendingMessages() string {
 		if i > 0 {
 			b.WriteString("\n")
 		}
-		prefixIndent, wrapWidth := m.writePrefix(&b, pendingPrefixStyle, "🦚")
+		var mb strings.Builder
+		prefixIndent, wrapWidth := m.writePrefix(&mb, pendingPrefixStyle, userLabel)
 		body := wordWrap(text, wrapWidth)
-		b.WriteString(pendingBodyStyle.Render(indentMultiline(body, prefixIndent)))
+		mb.WriteString(pendingBodyStyle.Render(indentMultiline(body, prefixIndent)))
+		b.WriteString(barLines(mb.String(), pendingPrefixStyle))
 	}
 	return b.String()
 }

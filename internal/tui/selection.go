@@ -149,7 +149,8 @@ func normalizeSel(a, b selPoint) (selPoint, selPoint) {
 // extractSelection returns the plain text between a and b, inclusive of the
 // cell under b (ansi.Cut is half-open, hence the +1 on the end column).
 // Trailing spaces are trimmed per line so padded layout gaps don't end up on
-// the clipboard.
+// the clipboard, and a line's leading sender bar is dropped: it is chrome,
+// not text the operator wrote or read.
 func extractSelection(lines []string, a, b selPoint) string {
 	if len(lines) == 0 {
 		return ""
@@ -162,7 +163,11 @@ func extractSelection(lines []string, a, b selPoint) string {
 		w := ansi.StringWidth(line)
 		from = clampInt(from, 0, w)
 		to = clampInt(to, from, w)
-		return strings.TrimRight(ansi.Strip(ansi.Cut(line, from, to)), " ")
+		plain := strings.TrimRight(ansi.Strip(ansi.Cut(line, from, to)), " ")
+		if from == 0 {
+			plain = strings.TrimPrefix(plain, messageBar)
+		}
+		return plain
 	}
 
 	if a.line == b.line {
@@ -171,7 +176,7 @@ func extractSelection(lines []string, a, b selPoint) string {
 	out := make([]string, 0, b.line-a.line+1)
 	out = append(out, cut(lines[a.line], a.col, ansi.StringWidth(lines[a.line])))
 	for i := a.line + 1; i < b.line; i++ {
-		out = append(out, strings.TrimRight(ansi.Strip(lines[i]), " "))
+		out = append(out, cut(lines[i], 0, ansi.StringWidth(lines[i])))
 	}
 	out = append(out, cut(lines[b.line], 0, b.col+1))
 	return strings.Join(out, "\n")

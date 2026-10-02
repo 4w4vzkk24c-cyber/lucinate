@@ -199,10 +199,11 @@ func TestPrefixWidth_AlignedBetweenUserAndAgent(t *testing.T) {
 		agentName string
 		wantWidth int
 	}{
-		{"ai", 4},
-		{"main", 4}, // displays as 🍋
-		{"claude", 8},
-		{"🦚", 4},
+		// The name column is the longer of the two names plus a two-cell gap.
+		{"ai", 6},        // "zane" is the longer name
+		{"main", 8},      // displays as "vesper"
+		{"claude", 8},    // same length as "vesper"
+		{"修复", 6},        // four cells wide, measured by display width
 		{"longagent", 11},
 	}
 
@@ -219,11 +220,11 @@ func TestPrefixWidth_AlignedBetweenUserAndAgent(t *testing.T) {
 func TestPrefixLabel_UsesAlignedTrailingPadding(t *testing.T) {
 	m := &chatModel{agentName: "claude"}
 
-	if got := m.prefixLabel("🦚"); got != "🦚:     " {
-		t.Errorf("prefixLabel(🦚) = %q, want %q", got, "🦚:     ")
+	if got := m.prefixLabel(userLabel); got != "zane    " {
+		t.Errorf("prefixLabel(%s) = %q, want %q", userLabel, got, "zane    ")
 	}
-	if got := m.prefixLabel("claude"); got != "claude: " {
-		t.Errorf("prefixLabel(claude) = %q, want %q", got, "claude: ")
+	if got := m.prefixLabel("claude"); got != "claude  " {
+		t.Errorf("prefixLabel(claude) = %q, want %q", got, "claude  ")
 	}
 }
 
@@ -459,17 +460,17 @@ func TestUpdateViewport_IndentsWrappedContentAfterPrefix(t *testing.T) {
 	m.updateViewport()
 	view := ansi.Strip(m.viewport.View())
 
-	if !strings.Contains(view, "🦚:") && strings.Contains(view, "alpha") {
-		t.Fatalf("expected first user line with prefix, got %q", view)
+	if !strings.Contains(view, "▌zane    alpha") {
+		t.Fatalf("expected first user line with bar and name, got %q", view)
 	}
-	if !strings.Contains(view, "\n      ") {
-		t.Fatalf("expected wrapped user continuation to be indented, got %q", view)
+	if !strings.Contains(view, "\n▌        alpha") && !strings.Contains(view, "\n▌        gamma") {
+		t.Fatalf("expected wrapped user continuation to be barred and indented, got %q", view)
 	}
-	if !strings.Contains(view, "🍋: line one") {
-		t.Fatalf("expected first assistant line with prefix, got %q", view)
+	if !strings.Contains(view, "▌vesper  line one") {
+		t.Fatalf("expected first assistant line with bar and name, got %q", view)
 	}
-	if !strings.Contains(view, "\n      line two") {
-		t.Fatalf("expected assistant continuation to be indented, got %q", view)
+	if !strings.Contains(view, "\n▌        line two") {
+		t.Fatalf("expected assistant continuation to be barred and indented, got %q", view)
 	}
 }
 
@@ -496,11 +497,12 @@ func TestUpdateViewport_NarrowLayoutStacksPrefixAboveBody(t *testing.T) {
 	}
 	view := strings.Join(lines, "\n")
 
-	if !strings.Contains(view, "🦚:\nalpha beta gamma") {
-		t.Fatalf("expected stacked user prefix above body, got %q", view)
+	// The body wraps one cell earlier than before: the bar takes a column.
+	if !strings.Contains(view, "▌zane\n▌alpha beta\n▌gamma") {
+		t.Fatalf("expected stacked user name above body, got %q", view)
 	}
-	if !strings.Contains(view, "🍋:\nline one\nline two") {
-		t.Fatalf("expected stacked assistant prefix above body, got %q", view)
+	if !strings.Contains(view, "▌vesper\n▌line one\n▌line two") {
+		t.Fatalf("expected stacked assistant name above body, got %q", view)
 	}
 }
 
@@ -793,8 +795,9 @@ func TestNarrowLayout_Threshold(t *testing.T) {
 	}{
 		{"wide_short_agent", "main", 100, false},
 		{"narrow_short_agent", "main", 30, true},
-		{"boundary_short_agent_narrow", "main", 67, true},
-		{"boundary_short_agent_wide", "main", 68, false},
+		// Margin 4 + bar 1 + name column 8 ("vesper" + gap) + body 60 = 73.
+		{"boundary_short_agent_narrow", "main", 72, true},
+		{"boundary_short_agent_wide", "main", 73, false},
 		{"wide_long_agent", "longagentname", 100, false},
 		{"narrow_long_agent", "longagentname", 70, true},
 		{"zero_width", "main", 0, true},
