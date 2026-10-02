@@ -75,7 +75,7 @@ func (m *chatModel) updateViewport() {
 				if msg.streaming {
 					body := wordWrap(msg.content, wrapWidth)
 					mb.WriteString(indentMultiline(body, prefixIndent))
-					mb.WriteString(cursorStyle.Render(spinnerFrames[m.spinnerFrame%len(spinnerFrames)]))
+					mb.WriteString(thinkingSpinnerStyle.Render(spinnerFrames[m.spinnerFrame%len(spinnerFrames)]))
 				} else if msg.rendered {
 					// Glamour-rendered content is already wrapped and contains ANSI codes.
 					content := msg.content

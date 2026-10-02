@@ -46,10 +46,16 @@ var (
 				Bold(true).
 				Foreground(assistantSenderClr)
 
-	// Streaming cursor.
+	// Spinner on a pending system row (compacting, clearing, ...).
 	cursorStyle = lipgloss.NewStyle().
 			Foreground(accent).
 			Bold(true)
+
+	// Spinner while the assistant's reply is on its way. Magenta is the
+	// house accent for a draft, which an unfinished reply is.
+	thinkingSpinnerStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#d33682")). // Solarized Magenta
+				Bold(true)
 
 	// In-app mouse selection highlight. Reverse video, like a terminal's
 	// native selection; applied over ANSI-stripped text so the highlight
