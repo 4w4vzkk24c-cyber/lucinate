@@ -933,6 +933,7 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 			agentID = m.sessionsModel.agentID
 		}
 		_, _ = m.chatModel.stopRecording()
+		slog.Debug("session switch", "from", m.chatModel.sessionKey, "to", msg.sessionKey)
 		m.chatModel = newChatModel(m.backend, msg.sessionKey, agentID, msg.agentName, msg.modelID, m.prefs, m.hideInput, connectionLabel(m.activeConn), "", m.brightCursor)
 		m.state = viewChat
 		m.sidebarFocus = false

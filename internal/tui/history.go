@@ -71,7 +71,7 @@ func (m chatModel) loadHistory() tea.Cmd {
 	limit := m.historyLimit
 	return func() tea.Msg {
 		msgs, err := fetchHistory(b, sessionKey, renderer, limit)
-		return historyLoadedMsg{messages: msgs, err: err}
+		return historyLoadedMsg{sessionKey: sessionKey, messages: msgs, err: err}
 	}
 }
 
@@ -94,7 +94,7 @@ func (m chatModel) refreshHistoryAt(boundary uint64) tea.Cmd {
 	limit := m.historyLimit
 	return func() tea.Msg {
 		msgs, err := fetchHistory(b, sessionKey, renderer, limit)
-		return historyRefreshMsg{messages: msgs, boundary: boundary, err: err}
+		return historyRefreshMsg{sessionKey: sessionKey, messages: msgs, boundary: boundary, err: err}
 	}
 }
 

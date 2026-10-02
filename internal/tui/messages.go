@@ -63,10 +63,15 @@ type sessionStats struct {
 	assistantMessages int
 }
 
-// historyLoadedMsg is returned when chat history is fetched.
+// historyLoadedMsg is returned when chat history is fetched. sessionKey is
+// the session the fetch was issued for: every session switch builds a new
+// chat model, replies arrive in whatever order the gateway answers, and one
+// for a session the operator has left must be dropped, not painted into the
+// session now open.
 type historyLoadedMsg struct {
-	messages []chatMessage
-	err      error
+	sessionKey string
+	messages   []chatMessage
+	err        error
 }
 
 // historyRefreshMsg merges server-canonical history into the message
@@ -77,9 +82,10 @@ type historyLoadedMsg struct {
 // looking at) and replaces everything ≤ boundary with the fetched
 // server history. The two halves are then concatenated, server first.
 type historyRefreshMsg struct {
-	messages []chatMessage
-	boundary uint64
-	err      error
+	sessionKey string // the session the refresh was issued for; see historyLoadedMsg
+	messages   []chatMessage
+	boundary   uint64
+	err        error
 }
 
 // chatSentMsg is returned after a message is sent.

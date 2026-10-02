@@ -193,7 +193,7 @@ func TestHistoryRefreshMsg_TriggersContextUsageRefresh(t *testing.T) {
 		return json.RawMessage(`{"sessions":[]}`), nil
 	}
 
-	_, cmd := m.Update(historyRefreshMsg{messages: []chatMessage{{role: "assistant", content: "ok"}}})
+	_, cmd := m.Update(historyRefreshMsg{sessionKey: m.sessionKey, messages: []chatMessage{{role: "assistant", content: "ok"}}})
 	if cmd == nil {
 		t.Fatal("expected a batch cmd that refreshes context usage")
 	}
@@ -244,7 +244,7 @@ func TestChatModel_PreloadedPendingMessage_DrainsOnHistoryLoaded(t *testing.T) {
 	}
 
 	var cmd tea.Cmd
-	m, cmd = m.Update(historyLoadedMsg{messages: nil, err: nil})
+	m, cmd = m.Update(historyLoadedMsg{sessionKey: m.sessionKey, messages: nil, err: nil})
 
 	if cmd == nil {
 		t.Fatal("expected drainQueue cmd after history load with a queued message")
@@ -279,7 +279,7 @@ func TestChatModel_HistoryLoadError_ShowsSystemMessage(t *testing.T) {
 	m := newChatModel(fb, "session-key", "agent-id", "test", "", config.DefaultPreferences(), false, "", "", false)
 
 	loadErr := errors.New("gateway returned ENOENT")
-	m, _ = m.Update(historyLoadedMsg{messages: nil, err: loadErr})
+	m, _ = m.Update(historyLoadedMsg{sessionKey: m.sessionKey, messages: nil, err: loadErr})
 
 	if m.historyLoading {
 		t.Error("historyLoading should be cleared after the load attempt")
@@ -305,7 +305,7 @@ func TestChatModel_NoInitialMessage_NoDrain(t *testing.T) {
 	}
 
 	var cmd tea.Cmd
-	m, cmd = m.Update(historyLoadedMsg{messages: nil, err: nil})
+	m, cmd = m.Update(historyLoadedMsg{sessionKey: m.sessionKey, messages: nil, err: nil})
 
 	if cmd != nil {
 		t.Errorf("no drain expected when pendingMessages empty; got cmd=%v", cmd)

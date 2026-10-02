@@ -722,6 +722,10 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case historyLoadedMsg:
+		if msg.sessionKey != m.sessionKey {
+			slog.Debug("dropped history for another session", "for", msg.sessionKey, "open", m.sessionKey)
+			return m, nil
+		}
 		m.historyLoading = false
 		switch {
 		case msg.err != nil:
@@ -915,6 +919,10 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 		return m, nil
 
 	case historyRefreshMsg:
+		if msg.sessionKey != m.sessionKey {
+			slog.Debug("dropped history refresh for another session", "for", msg.sessionKey, "open", m.sessionKey)
+			return m, nil
+		}
 		if msg.err == nil && len(msg.messages) > 0 {
 			// Merge: replace history-side rows with server-canonical
 			// state, preserve the live tail (rows whose gen exceeds
