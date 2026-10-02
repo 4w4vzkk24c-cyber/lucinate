@@ -432,6 +432,30 @@ func TestRerender_OneAtATime(t *testing.T) {
 	}
 }
 
+// A result can arrive from a chat this one replaced on the same key. It is
+// not the result of the command in flight here, so it must not end it:
+// that would start a second command beside the one still running.
+func TestRerender_ResultFromAReplacedChatDoesNotEndTheOneInFlight(t *testing.T) {
+	old := rerenderChat(t, &rerenderFactory{})
+	old.setSize(60, 40)
+	fromOld := old.rerenderCmd()().(transcriptRerenderedMsg)
+
+	m := rerenderChat(t, &rerenderFactory{})
+	if m.rerenderCmd() == nil {
+		t.Fatal("no re-render was issued for a stale row")
+	}
+	inFlight := m.rerenderFor
+
+	m, _ = m.Update(fromOld)
+
+	if m.rerenderFor != inFlight {
+		t.Error("a result from another chat's command ended the one in flight")
+	}
+	if m.rerenderCmd() != nil {
+		t.Error("a second re-render was started beside the one in flight")
+	}
+}
+
 // A successful /reset changes the chat's key, so the result in flight will
 // be dropped by routing; it must not block the next re-render.
 func TestRerender_ResetForgetsTheOneInFlight(t *testing.T) {

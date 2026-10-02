@@ -109,8 +109,11 @@ was large, on every resize.
 - **One re-render at a time per chat.** A drag resize is a stream of sizes; a command per size
   would render the whole transcript once for each, in parallel. The one in flight cannot be
   cancelled, so its result arrives out of date, changes nothing, and one more command is issued
-  for the size by then. There is no cap on the bytes one command renders: it is off the UI
-  goroutine and never concurrent with another for the same chat.
+  for the size by then. Only a result at the stamp in flight ends it, so a late result from a
+  chat this one replaced on the same key (two cron transcripts) does not. The one case left is
+  such a result at the very same stamp, which can let one extra command start; it is bounded at
+  two and corrects itself. There is no cap on the bytes one command renders: it runs off the UI
+  goroutine.
 - **The result is matched by source text, never by index.** A result for a stamp the chat has left
   changes nothing; rows it did not cover stay stale and the next `Update` asks again. A source the
   renderer rejects is stamped so it is not asked for twice.

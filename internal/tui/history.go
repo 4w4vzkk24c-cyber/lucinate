@@ -215,8 +215,15 @@ func rerenderRows(sessionKey string, job renderJob, raws []string) transcriptRer
 // applyRerender takes a re-render result into the chat. A result for a
 // stamp the chat has moved on from changes no row; the rows stay stale and
 // the next Update issues a fresh command.
+//
+// Only the result of the command in flight ends it. A result can also
+// arrive from a chat this one replaced on the same key (two cron
+// transcripts both have none); taking that as the end would let a second
+// command start beside the one still running.
 func (m *chatModel) applyRerender(msg transcriptRerenderedMsg) {
-	m.rerenderFor = renderStamp{}
+	if msg.stamp == m.rerenderFor {
+		m.rerenderFor = renderStamp{}
+	}
 	if msg.stamp != m.stamp() {
 		return
 	}
