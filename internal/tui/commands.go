@@ -53,7 +53,37 @@ type pendingNavConfirm struct {
 // hint surfaces the picker first, "/model" before "/models" likewise.
 // Tab now extends to the longest common prefix and the completion menu
 // shows every candidate, so the curated order no longer rules Tab.
-var slashCommands = []string{"/agents", "/agent", "/attach", "/cancel", "/clear", "/commands", "/compact", "/config", "/connections", "/crons", "/cron", "/exit", "/export", "/help", "/header", "/model", "/models", "/mouse", "/new", "/quit", "/record", "/reset", "/routines", "/routine", "/sessions", "/settings", "/skills", "/stats", "/status", "/think"}
+var slashCommands = []string{"/agents", "/agent", "/archive", "/attach", "/cancel", "/clear", "/commands", "/compact", "/config", "/connections", "/crons", "/cron", "/delete", "/exit", "/export", "/help", "/header", "/model", "/models", "/mouse", "/new", "/quit", "/record", "/reset", "/routines", "/routine", "/sessions", "/settings", "/skills", "/stats", "/status", "/think"}
+
+// Verbs for removing the open session, used in the outcome message.
+const (
+	sessionRemovalArchive = "archive"
+	sessionRemovalDelete  = "delete"
+)
+
+// sessionRemovalTimeout bounds the gateway round-trip of an archive or delete.
+const sessionRemovalTimeout = 30 * time.Second
+
+// confirmSessionRemoval opens the y/n prompt for archiving or deleting the
+// open session. The target is pinned here, when the prompt opens: the
+// action removes the session that was named, whatever is open by the time
+// the operator answers. promptFormat takes the session's display name.
+func (m *chatModel) confirmSessionRemoval(verb, promptFormat, runningStatus string, remove func(context.Context, string) error) {
+	sessionKey := m.sessionKey
+	m.pendingConfirm = &pendingConfirmation{
+		prompt:        fmt.Sprintf(promptFormat, cleanSessionDisplayKey(sessionKey)),
+		runningStatus: runningStatus,
+		action: func() tea.Cmd {
+			return func() tea.Msg {
+				ctx, cancel := context.WithTimeout(context.Background(), sessionRemovalTimeout)
+				defer cancel()
+				return sessionRemovedMsg{sessionKey: sessionKey, verb: verb, err: remove(ctx, sessionKey)}
+			}
+		},
+	}
+	m.appendMessage(chatMessage{role: "system", content: m.pendingConfirm.prompt, confirmPrompt: true})
+	m.updateViewport()
+}
 
 // thinkingLevels is the ordered list of valid thinking levels.
 var thinkingLevels = []string{"off", "minimal", "low", "medium", "high"}
@@ -65,6 +95,8 @@ var thinkingLevels = []string{"off", "minimal", "low", "medium", "high"}
 const helpBody = `/quit, /exit — quit lucinate
 /agents — return to agent picker
 /agent <name> — switch agent directly
+/archive — archive this session: it leaves the list, its transcript is kept (asks to confirm)
+/delete — permanently delete this session and its transcript (asks to confirm)
 /attach <path> — stage a file to send with your next message (also: ctrl+a)
 /cancel — cancel the current response (also: Esc)
 /clear — clear chat display
@@ -330,6 +362,22 @@ func (m *chatModel) handleSlashCommand(text string) (handled bool, cmd tea.Cmd) 
 		return true, m.gateNavigation("Opening crons", false, func() tea.Msg {
 			return showCronsMsg{filterAgentID: filterAgentID, filterLabel: filterLabel}
 		})
+	case "/archive":
+		archiver, ok := m.backend.(backend.ArchiveBackend)
+		if !ok {
+			m.appendMessage(chatMessage{role: "system", errMsg: "/archive is not available on this connection"})
+			m.updateViewport()
+			return true, nil
+		}
+		m.confirmSessionRemoval(sessionRemovalArchive,
+			"Archive session %q? It leaves the list; its transcript is kept. (y/n)",
+			"Archiving session...", archiver.SessionArchive)
+		return true, nil
+	case "/delete":
+		m.confirmSessionRemoval(sessionRemovalDelete,
+			"Delete session %q? This permanently deletes it and its transcript. (y/n)",
+			"Deleting session...", m.backend.SessionDelete)
+		return true, nil
 	case "/new":
 		// Replaces the chat, so queued messages would be dropped: gate it
 		// like every other navigation that does.

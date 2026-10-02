@@ -47,6 +47,11 @@ type fakeBackend struct {
 	// paths without inventing a separate fake.
 	createSessionHook func(ctx context.Context, agentID, key string) (string, error)
 
+	// sessionDeleteHook / sessionArchiveHook, when non-nil, record the
+	// session a removal was requested for and decide its outcome.
+	sessionDeleteHook  func(ctx context.Context, sessionKey string) error
+	sessionArchiveHook func(ctx context.Context, sessionKey string) error
+
 	// sessionsListHook, when non-nil, replaces the default empty
 	// SessionsList response so tests of the chat header's
 	// context-usage path can stage a realistic gateway payload (or
@@ -137,7 +142,18 @@ func (f *fakeBackend) CreateSession(ctx context.Context, agentID, key string) (s
 	}
 	return key, nil
 }
-func (f *fakeBackend) SessionDelete(ctx context.Context, sessionKey string) error { return nil }
+func (f *fakeBackend) SessionDelete(ctx context.Context, sessionKey string) error {
+	if f.sessionDeleteHook != nil {
+		return f.sessionDeleteHook(ctx, sessionKey)
+	}
+	return nil
+}
+func (f *fakeBackend) SessionArchive(ctx context.Context, sessionKey string) error {
+	if f.sessionArchiveHook != nil {
+		return f.sessionArchiveHook(ctx, sessionKey)
+	}
+	return nil
+}
 func (f *fakeBackend) ChatSend(ctx context.Context, sessionKey string, params backend.ChatSendParams) (*protocol.ChatSendResult, error) {
 	return &protocol.ChatSendResult{}, nil
 }

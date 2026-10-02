@@ -99,6 +99,12 @@ func (b *Backend) SessionDelete(ctx context.Context, sessionKey string) error {
 	return b.client.SessionDelete(ctx, sessionKey)
 }
 
+// --- ArchiveBackend ---
+
+func (b *Backend) SessionArchive(ctx context.Context, sessionKey string) error {
+	return b.client.SessionArchive(ctx, sessionKey)
+}
+
 func (b *Backend) ChatSend(ctx context.Context, sessionKey string, params backend.ChatSendParams) (*protocol.ChatSendResult, error) {
 	message := params.Message
 	if catalog := b.takePendingCatalog(sessionKey, params.Skills); catalog != "" {

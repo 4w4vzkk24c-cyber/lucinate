@@ -344,6 +344,16 @@ type sessionClearedMsg struct {
 	newSessionKey string
 }
 
+// sessionRemovedMsg reports the outcome of archiving or deleting a session
+// (/archive, /delete). sessionKey is the session the removal was asked for,
+// so an outcome that lands after the operator has moved on does not move
+// the chat they are now on.
+type sessionRemovedMsg struct {
+	sessionKey string
+	verb       string // sessionRemovalArchive or sessionRemovalDelete
+	err        error
+}
+
 // spinnerTickMsg advances the streaming-response placeholder animation.
 type spinnerTickMsg struct{}
 

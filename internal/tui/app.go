@@ -979,6 +979,30 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 		m.state = viewCrons
 		return m, nil
 
+	case sessionRemovedMsg:
+		slog.Debug("session removed", "session", msg.sessionKey, "verb", msg.verb, "err", msg.err, "open", m.chatModel.sessionKey)
+		reload := m.sessionsModel.loadSessions()
+		if msg.sessionKey != m.chatModel.sessionKey {
+			// The operator moved on before the outcome landed: leave the
+			// chat they are on alone and just refresh the list.
+			return m, reload
+		}
+		if msg.err != nil {
+			m.chatModel.replacePendingSystem(chatMessage{
+				role:   "system",
+				errMsg: fmt.Sprintf("Could not %s this session: %v", msg.verb, msg.err),
+			})
+			m.chatModel.updateViewport()
+			return m, nil
+		}
+		// The open session has left the list, so the chat cannot stay on
+		// it: move to a neighbour, or start a session when it was the last.
+		next, ok := m.sessionAfterRemoval(msg.sessionKey)
+		if !ok {
+			return m, tea.Batch(createSessionCmd(m.backend, m.sessionsModel.agentID, m.sessionsModel.agentName, m.sessionsModel.modelID), reload)
+		}
+		return m, tea.Batch(func() tea.Msg { return next }, reload)
+
 	case newSessionCreatedMsg:
 		if msg.err != nil {
 			if m.state == viewChat {
@@ -1289,6 +1313,34 @@ func (m *AppModel) syncSidebarCursor(sessionKey string) {
 			return
 		}
 	}
+}
+
+// sessionAfterRemoval picks the session to open once removed has left the
+// sidebar: the one listed after it, else the one before. ok is false when
+// no other session is listed.
+func (m *AppModel) sessionAfterRemoval(removed string) (sessionSelectedMsg, bool) {
+	var others []sessionItem
+	at := 0
+	for _, it := range m.sessionsModel.list.Items() {
+		s, isSession := it.(sessionItem)
+		if !isSession {
+			continue
+		}
+		if s.key == removed {
+			at = len(others)
+			continue
+		}
+		others = append(others, s)
+	}
+	if len(others) == 0 {
+		return sessionSelectedMsg{}, false
+	}
+	return sessionSelectedMsg{
+		sessionKey: others[min(at, len(others)-1)].key,
+		agentID:    m.sessionsModel.agentID,
+		agentName:  m.sessionsModel.agentName,
+		modelID:    m.sessionsModel.modelID,
+	}, true
 }
 
 // cycleSession returns a sessionSelectedMsg for the next (dir=1) or

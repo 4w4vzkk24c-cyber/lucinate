@@ -365,6 +365,13 @@ type CompactBackend interface {
 	SessionCompact(ctx context.Context, sessionKey string) error
 }
 
+// ArchiveBackend exposes session archiving behind /archive: the session
+// leaves the active list and its transcript is kept. Backends with no
+// archive concept omit this and the TUI shows a "not available" hint.
+type ArchiveBackend interface {
+	SessionArchive(ctx context.Context, sessionKey string) error
+}
+
 // ThinkingBackend exposes the per-session thinking-level switch
 // behind /think.
 type ThinkingBackend interface {

@@ -730,6 +730,36 @@ func (c *Client) SessionDelete(ctx context.Context, sessionKey string) error {
 	})
 }
 
+// sessionArchiveParams is the sessions.patch body that archives a session.
+// The openclaw-go SessionsPatchParams predates the gateway's archived
+// field, so the request is sent raw instead of through SessionsPatch.
+type sessionArchiveParams struct {
+	Key      string `json:"key"`
+	Archived bool   `json:"archived"`
+}
+
+// SessionArchive archives a session: it leaves the active list and its
+// transcript is kept.
+func (c *Client) SessionArchive(ctx context.Context, sessionKey string) error {
+	gw, ctx, cancel, err := c.rpc(ctx)
+	if err != nil {
+		return err
+	}
+	defer cancel()
+	const method = "sessions.patch"
+	resp, err := gw.Send(ctx, method, sessionArchiveParams{Key: sessionKey, Archived: true})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		if resp.Error != nil {
+			return fmt.Errorf("%s: %s: %s", method, resp.Error.Code, resp.Error.Message)
+		}
+		return fmt.Errorf("%s: request failed", method)
+	}
+	return nil
+}
+
 // GatewayHealth retrieves the gateway health snapshot.
 func (c *Client) GatewayHealth(ctx context.Context) (*protocol.HealthEvent, error) {
 	gw, ctx, cancel, err := c.rpc(ctx)
