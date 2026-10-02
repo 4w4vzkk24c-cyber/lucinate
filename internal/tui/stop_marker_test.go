@@ -1,9 +1,10 @@
 package tui
 
-// Transient stop marker for the sessions sidebar: a session whose run just
-// ended shows a distinct glyph for stopMarkerTTL, then settles to idle.
-// Client-only — derived from the hasActiveRun transition between two
-// successive sessions.list payloads, so it cannot say *how* the run ended.
+// Transient end-of-run marker for the sessions sidebar: a session whose run
+// just ended cleanly shows DONE for stopMarkerTTL, then settles to idle.
+// Derived from the hasActiveRun transition between two successive
+// sessions.list payloads. How a run ended (FAIL, STOP) comes from the
+// payload's status fields and is covered in sidebar_state_test.go.
 //
 // Every assertion reads the rendered list, never the model's fields: the
 // marker is a display promise, and a stamp nobody draws is not a marker.
@@ -14,7 +15,9 @@ import (
 	"time"
 )
 
-const stopMarkerGlyph = "■"
+const stopMarkerGlyph = "DONE"
+
+var stopMarkerEpoch = time.Unix(1_000, 0)
 
 // stopMarkerClock is a hand-advanced clock for the sessions model.
 type stopMarkerClock struct{ t time.Time }

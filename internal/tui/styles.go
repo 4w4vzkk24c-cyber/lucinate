@@ -18,6 +18,11 @@ var (
 	execClr     = lipgloss.Color("#cb4b16") // Orange — remote exec
 	localExcClr = lipgloss.Color("#dc322f") // Red — local exec (shares Red; prefix+border distinguish)
 
+	// Session state lamps (house accents): one meaning each.
+	runClr   = lipgloss.Color("#2aa198") // Cyan — a run in flight
+	okClr    = lipgloss.Color("#859900") // Green — ended cleanly
+	staleClr = lipgloss.Color("#b58900") // Yellow — stopped by the operator
+
 	// Header bar.
 	headerStyle = lipgloss.NewStyle().
 			Bold(true).

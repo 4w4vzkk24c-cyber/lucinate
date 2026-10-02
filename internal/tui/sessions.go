@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"image/color"
 	"io"
 	"log/slog"
 	"sort"
@@ -27,8 +28,13 @@ type sessionItem struct {
 	updatedAt    int64 // Unix millis
 	group        string
 	hasActiveRun *bool
+	// status is the gateway's last-run status: running, done, failed,
+	// killed, timeout, or empty when the session has never run.
+	status string
+	// abortedLastRun reports that the last run was stopped by the operator.
+	abortedLastRun bool
 	// stoppedAt is when the client saw this session's run end; zero when
-	// no stop marker is showing. See markRecentStops.
+	// no end-of-run marker is showing. See markRecentStops.
 	stoppedAt time.Time
 }
 
@@ -48,9 +54,8 @@ type stopMarkerExpiredMsg struct{}
 // markRecentStops returns next with stop markers applied against the
 // previous list: a session that was running and no longer is gets stamped
 // now, and a stamp younger than stopMarkerTTL is carried across refreshes.
-// newStop reports whether any session was freshly stamped. The transition
-// is all the client can see — sessions.list carries no last-outcome field,
-// so a finished run and an aborted one mark identically.
+// newStop reports whether any session was freshly stamped. The stamp only
+// says a run ended; sessionState decides which word that earns.
 func markRecentStops(prev, next []sessionItem, now time.Time) (marked []sessionItem, newStop bool) {
 	before := make(map[string]sessionItem, len(prev))
 	for _, p := range prev {
@@ -92,9 +97,74 @@ type sessionGroupHeader struct {
 
 func (h sessionGroupHeader) FilterValue() string { return "" }
 
-// sessionRowChromeCells is what a session row spends before its title: the
-// two-cell cursor prefix and the two-cell activity indicator.
-const sessionRowChromeCells = 4
+// A session row is: cursor prefix, glyph, state word, title.
+const (
+	sessionCursorCells = 2 // "> " or two spaces
+	sessionGlyphCells  = 2 // chess glyph and a space
+	sessionStateCells  = 5 // the longest state word and a space
+	// sessionRowChromeCells is what a row spends before its title.
+	sessionRowChromeCells = sessionCursorCells + sessionGlyphCells + sessionStateCells
+)
+
+// Session state words. A state is a word, never a colour or a glyph alone.
+const (
+	sessionStateRun  = "RUN"  // a run is in flight
+	sessionStateDone = "DONE" // a run just ended cleanly (shown for stopMarkerTTL)
+	sessionStateFail = "FAIL" // the last run failed or timed out
+	sessionStateStop = "STOP" // the last run was aborted or killed
+	sessionStateIdle = ""     // nothing to report
+)
+
+// sessionState maps what the gateway reports onto one state word. A run in
+// flight outranks the last run's outcome; an outcome outranks the transient
+// DONE. Status "running" without an active run is treated as idle: it is
+// what the gateway reports for a parent whose turn has ended.
+func sessionState(i sessionItem) string {
+	switch {
+	case i.isRunning():
+		return sessionStateRun
+	case i.status == "failed" || i.status == "timeout":
+		return sessionStateFail
+	case i.abortedLastRun || i.status == "killed":
+		return sessionStateStop
+	case !i.stoppedAt.IsZero():
+		return sessionStateDone
+	}
+	return sessionStateIdle
+}
+
+// sessionStateCell renders the state word padded to its fixed column.
+func sessionStateCell(i sessionItem) string {
+	state := sessionState(i)
+	pad := strings.Repeat(" ", sessionStateCells-len(state))
+	colour, known := map[string]color.Color{
+		sessionStateRun:  runClr,
+		sessionStateDone: okClr,
+		sessionStateFail: errClr,
+		sessionStateStop: staleClr,
+	}[state]
+	if !known {
+		return pad
+	}
+	return lipgloss.NewStyle().Foreground(colour).Bold(true).Render(state) + pad
+}
+
+// sessionGlyph says what the session is: a king for an agent session, a
+// pawn for a subagent, filled while a run is in flight and outlined
+// otherwise. Every row has one — the gateway always reports hasActiveRun,
+// so an idle session must not render as a blank.
+func sessionGlyph(i sessionItem) string {
+	isSub := strings.Contains(i.key, ":subagent:")
+	switch {
+	case i.isRunning() && isSub:
+		return lipgloss.NewStyle().Foreground(runClr).Bold(true).Render("♟ ")
+	case i.isRunning():
+		return lipgloss.NewStyle().Foreground(runClr).Bold(true).Render("♛ ")
+	case isSub:
+		return lipgloss.NewStyle().Foreground(subtle).Render("♙ ")
+	}
+	return lipgloss.NewStyle().Foreground(subtle).Render("♕ ")
+}
 
 // sessionDelegate renders each item in the session list.
 type sessionDelegate struct{}
@@ -126,32 +196,7 @@ func (d sessionDelegate) Render(w io.Writer, m list.Model, index int, item list.
 		titleCells := max(m.Width()-sessionRowChromeCells, 0)
 		displayTitle = ansi.Truncate(displayTitle, titleCells, "…")
 
-		// Activity indicator:
-		// ● (accent/amber) if active, ○ (subtle) if unknown/omitted (*bool == nil), or space if idle (false)
-		// Activity indicator with session-type differentiation:
-		// Real agent sessions (kings):   ♛ active, ♕ dormant
-		// Subagent sessions (pawns):   ♟ active, ♙ standby
-		isSub := strings.Contains(i.key, ":subagent:")
-		indicator := "  "
-		if !i.stoppedAt.IsZero() {
-			// Just stopped: one glyph for agents and subagents alike,
-			// until expireStopMarkers clears the stamp.
-			indicator = lipgloss.NewStyle().Foreground(execClr).Bold(true).Render("■ ")
-		} else if i.hasActiveRun != nil {
-			if *i.hasActiveRun {
-				if isSub {
-					indicator = lipgloss.NewStyle().Foreground(subtle).Bold(true).Render("♟ ")
-				} else {
-					indicator = lipgloss.NewStyle().Foreground(accent).Bold(true).Render("♛ ")
-				}
-			}
-		} else {
-			if isSub {
-					indicator = lipgloss.NewStyle().Foreground(subtle).Render("♙ ")
-			} else {
-					indicator = lipgloss.NewStyle().Foreground(subtle).Render("♕ ")
-			}
-		}
+		indicator := sessionGlyph(i) + sessionStateCell(i)
 
 		// Pad to the pane: every row is exactly m.Width() cells, so the
 		// sidebar's rendered width never depends on its longest title.
@@ -269,6 +314,8 @@ type sessionListEntry struct {
 	UpdatedAt          int64  `json:"updatedAt"`
 	Model              string `json:"model"`
 	HasActiveRun       *bool  `json:"hasActiveRun,omitempty"`
+	Status             string `json:"status"`
+	AbortedLastRun     bool   `json:"abortedLastRun"`
 }
 
 // cleanSessionDisplayKey strips internal routing prefixes like agent:<agentId>:
@@ -346,7 +393,9 @@ func parseSessionsPayload(raw []byte) ([]sessionItem, error) {
 			lastMessage:  entry.LastMessagePreview,
 			updatedAt:    entry.UpdatedAt,
 			group:        sessionGroup(entry.Key),
-			hasActiveRun: entry.HasActiveRun,
+			hasActiveRun:   entry.HasActiveRun,
+			status:         entry.Status,
+			abortedLastRun: entry.AbortedLastRun,
 		})
 	}
 	// Sort by updatedAt descending within each group.

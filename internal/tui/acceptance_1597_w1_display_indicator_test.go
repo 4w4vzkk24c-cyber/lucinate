@@ -42,7 +42,10 @@ func TestSessionDelegate_ActivityIndicatorRender(t *testing.T) {
 	}{
 		{"active run true", &trueVal, "♛"},
 		{"active run nil unknown", nil, "♕"},
-		{"active run false idle", &falseVal, "  "},
+		// Amended 2026-10-02: this case asserted "  ", which every row
+		// contains, so it pinned nothing — and the gateway always sends
+		// false for idle, so idle sessions rendered with no glyph at all.
+		{"active run false idle", &falseVal, "♕"},
 	}
 
 	for _, tc := range cases {
