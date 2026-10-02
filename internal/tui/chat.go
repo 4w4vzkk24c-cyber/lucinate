@@ -202,6 +202,9 @@ type chatModel struct {
 	attachPrompt       *attachPromptState   // non-nil while the ctrl+a path prompt is capturing a file path
 	historyLimit       int
 	historyLoading     bool   // true while the initial history fetch is in flight; gates the placeholder in updateViewport
+	seeded             bool   // history was painted from the transcript cache at open (seedHistory); the load that follows replaces the gen-0 rows instead of prepending
+	refreshMerged      bool   // a historyRefreshMsg has merged on this model; an initial load arriving after it is older and is discarded
+	sessionGone        bool   // the session was archived or deleted; the transcript cache must not remember this chat when it is replaced
 	thinkingLevel      string // current thinking level; "" means not set / using gateway default
 	connState          ConnStateMsg
 	hideInput          bool   // when true, the textarea + help line are not rendered; the textarea model still receives input bytes
@@ -376,6 +379,34 @@ func (m *chatModel) mergeHistoryRefresh(server []chatMessage, boundary uint64) {
 		}
 	}
 	m.messages = merged
+}
+
+// seedHistory paints the chat from rows remembered by the transcript cache,
+// before the gateway has answered. The rows are server-canonical (gen 0);
+// the history load that Init issues replaces them. Call it before the chat
+// is sized: setSize re-wraps rendered rows to the pane.
+func (m *chatModel) seedHistory(rows []chatMessage) {
+	m.messages = rows
+	m.seeded = true
+	m.historyLoading = false
+}
+
+// historySettled reports whether the chat's history is known: painted from
+// the cache, or answered by the gateway.
+func (m *chatModel) historySettled() bool {
+	return m.seeded || !m.historyLoading
+}
+
+// canonicalRows returns a copy of the server-canonical rows (gen 0): what
+// the gateway last reported, without the live tail of an unfinished turn.
+func (m *chatModel) canonicalRows() []chatMessage {
+	var rows []chatMessage
+	for i := range m.messages {
+		if m.messages[i].gen == 0 {
+			rows = append(rows, m.messages[i])
+		}
+	}
+	return rows
 }
 
 // removeThinkingPlaceholder removes the streaming assistant placeholder added
@@ -733,6 +764,18 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 				role:   "system",
 				errMsg: fmt.Sprintf("Could not load conversation history: %v", msg.err),
 			})
+		case m.refreshMerged:
+			// A refresh issued after this load has already merged, so
+			// these rows are the older state: applying them would undo
+			// the turn the refresh brought in.
+			slog.Debug("discarded a history load older than a merged refresh", "session", m.sessionKey)
+		case m.seeded:
+			// The chat was painted from the transcript cache. Replace
+			// those rows (gen 0) with what the gateway has now, keeping
+			// anything appended since. An empty reply replaces them with
+			// nothing: the session was emptied elsewhere.
+			m.mergeHistoryRefresh(msg.messages, 0)
+			m.recordCanonical(msg.messages)
 		case len(msg.messages) > 0:
 			// Server-imported rows keep gen=0 (the chatMessage zero
 			// value) so any subsequent refresh treats them as
@@ -827,6 +870,12 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 		return m, nil
 
 	case sessionClearedMsg:
+		if msg.sessionKey != m.sessionKey {
+			// The reset was for a session the operator has since left;
+			// applying it here would rename and empty the wrong chat.
+			slog.Debug("dropped a reset outcome for another session", "for", msg.sessionKey, "open", m.sessionKey)
+			return m, nil
+		}
 		if msg.err != nil {
 			m.replacePendingSystem(chatMessage{role: "system", errMsg: fmt.Sprintf("clear session failed: %v", msg.err)})
 		} else {
@@ -931,6 +980,7 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 			// while a tool card is in flight — scenarios where the old
 			// wholesale-replace would have wiped live state.
 			m.mergeHistoryRefresh(msg.messages, msg.boundary)
+			m.refreshMerged = true
 			m.recordCanonical(msg.messages)
 			m.applyLayout()
 			m.updateViewport()

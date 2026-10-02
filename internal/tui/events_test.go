@@ -1194,7 +1194,7 @@ func TestChatUpdate_SessionClearedMsg_Success(t *testing.T) {
 	m.sessionKey = "old-key"
 	m.messages = []chatMessage{{role: "user", content: "hello"}}
 
-	updated, _ := m.Update(sessionClearedMsg{newSessionKey: "new-key"})
+	updated, _ := m.Update(sessionClearedMsg{sessionKey: "old-key", newSessionKey: "new-key"})
 
 	if updated.sessionKey != "new-key" {
 		t.Errorf("expected session key %q, got %q", "new-key", updated.sessionKey)
@@ -1211,7 +1211,7 @@ func TestChatUpdate_SessionClearedMsg_Error(t *testing.T) {
 	m := newTestChatModel()
 	m.sessionKey = "old-key"
 
-	updated, _ := m.Update(sessionClearedMsg{err: errString("delete failed")})
+	updated, _ := m.Update(sessionClearedMsg{sessionKey: "old-key", err: errString("delete failed")})
 
 	if updated.sessionKey != "old-key" {
 		t.Error("session key should not change on error")

@@ -339,7 +339,10 @@ type thinkingChangedMsg struct {
 type sessionCompactedMsg struct{ err error }
 
 // sessionClearedMsg is returned after clearing (deleting) a session.
+// sessionKey is the session that was reset: the outcome applies to that
+// chat only, and its remembered transcript is dropped.
 type sessionClearedMsg struct {
+	sessionKey    string
 	err           error
 	newSessionKey string
 }

@@ -67,7 +67,7 @@ func (hm *historyMessage) UnmarshalJSON(data []byte) error {
 func (m chatModel) loadHistory() tea.Cmd {
 	sessionKey := m.sessionKey
 	b := m.backend
-	renderer := m.renderer
+	renderer := m.historyRenderer()
 	limit := m.historyLimit
 	return func() tea.Msg {
 		msgs, err := fetchHistory(b, sessionKey, renderer, limit)
@@ -90,7 +90,7 @@ func (m chatModel) loadHistory() tea.Cmd {
 func (m chatModel) refreshHistoryAt(boundary uint64) tea.Cmd {
 	sessionKey := m.sessionKey
 	b := m.backend
-	renderer := m.renderer
+	renderer := m.historyRenderer()
 	limit := m.historyLimit
 	return func() tea.Msg {
 		msgs, err := fetchHistory(b, sessionKey, renderer, limit)
@@ -98,7 +98,31 @@ func (m chatModel) refreshHistoryAt(boundary uint64) tea.Cmd {
 	}
 }
 
-func fetchHistory(b backend.Backend, sessionKey string, renderer *glamour.TermRenderer, limit int) ([]chatMessage, error) {
+// markdownRenderer is the one method of *glamour.TermRenderer the history
+// path uses. Naming it lets a test count renders.
+type markdownRenderer interface {
+	Render(in string) (string, error)
+}
+
+// historyRenderer returns the model's renderer as a markdownRenderer, or a
+// nil interface when there is none. Assigning a nil *glamour.TermRenderer
+// straight to the interface would make a non-nil interface holding a nil
+// pointer, and fetchHistory's nil check would pass it through to a crash.
+func (m chatModel) historyRenderer() markdownRenderer {
+	if m.renderer == nil {
+		return nil
+	}
+	return m.renderer
+}
+
+// fetchHistory loads a session's history and returns the rows the
+// transcript shows: user and assistant messages with text, at most the last
+// limit of them (all of them when limit is 0 or less). The gateway is asked
+// for limit, but does not always honour it — a session with an expanded CLI
+// import comes back whole — so the reply is trimmed here, and trimmed
+// BEFORE rendering: Markdown rendering is the per-message cost, and it must
+// be bounded by limit, not by what the gateway chose to send.
+func fetchHistory(b backend.Backend, sessionKey string, renderer markdownRenderer, limit int) ([]chatMessage, error) {
 	raw, err := b.ChatHistory(context.Background(), sessionKey, limit)
 	if err != nil {
 		return nil, err
@@ -107,47 +131,73 @@ func fetchHistory(b backend.Backend, sessionKey string, renderer *glamour.TermRe
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		return nil, err
 	}
-	var msgs []chatMessage
-	for _, hm := range resp.Messages {
-		role := hm.Role
-		if role != "user" && role != "assistant" {
+	msgs := lastShownMessages(resp.Messages, limit)
+	for i := range msgs {
+		if msgs[i].role != "assistant" || renderer == nil || !looksLikeMarkdown(msgs[i].content) {
 			continue
 		}
-		var parts []string
-		var thinkingParts []string
-		for _, block := range hm.Content {
-			if block.Type == "text" && block.Text != "" {
-				parts = append(parts, block.Text)
-			}
-			if block.Type == "thinking" && block.Text != "" {
-				thinkingParts = append(thinkingParts, block.Text)
-			}
+		if out, err := renderer.Render(msgs[i].content); err == nil {
+			msgs[i].raw = msgs[i].content
+			msgs[i].content = strings.TrimSpace(out)
+			msgs[i].rendered = true
 		}
-		text := strings.Join(parts, "\n")
-		thinking := strings.Join(thinkingParts, "\n")
-		if text == "" {
-			continue
-		}
-		if role == "user" {
-			text = stripInternalContextBlocks(text)
-			text = stripLocalAgentSkillBlocks(text)
-			text = stripSystemLines(text)
-			if text == "" {
-				continue
-			}
-		}
-		rendered := false
-		raw := ""
-		if role == "assistant" && renderer != nil && looksLikeMarkdown(text) {
-			if out, err := renderer.Render(text); err == nil {
-				raw = text
-				text = strings.TrimSpace(out)
-				rendered = true
-			}
-		}
-		msgs = append(msgs, chatMessage{role: role, content: text, raw: raw, thinking: thinking, rendered: rendered, timestampMs: hm.Timestamp})
 	}
 	return msgs, nil
+}
+
+// lastShownMessages returns, oldest first and unrendered, the last limit
+// history entries the transcript shows (all of them when limit is 0 or
+// less). It walks from the newest entry backwards and stops at limit, so
+// entries beyond the window cost nothing.
+func lastShownMessages(history []historyMessage, limit int) []chatMessage {
+	var newestFirst []chatMessage
+	for i := len(history) - 1; i >= 0; i-- {
+		if limit > 0 && len(newestFirst) == limit {
+			break
+		}
+		if msg, shown := shownMessage(history[i]); shown {
+			newestFirst = append(newestFirst, msg)
+		}
+	}
+	msgs := make([]chatMessage, len(newestFirst))
+	for i, msg := range newestFirst {
+		msgs[len(newestFirst)-1-i] = msg
+	}
+	return msgs
+}
+
+// shownMessage converts one history entry to a transcript row. shown is
+// false for entries the transcript omits: other roles, and messages with no
+// text left once the internal blocks are stripped.
+func shownMessage(hm historyMessage) (msg chatMessage, shown bool) {
+	if hm.Role != "user" && hm.Role != "assistant" {
+		return chatMessage{}, false
+	}
+	var parts []string
+	var thinkingParts []string
+	for _, block := range hm.Content {
+		if block.Type == "text" && block.Text != "" {
+			parts = append(parts, block.Text)
+		}
+		if block.Type == "thinking" && block.Text != "" {
+			thinkingParts = append(thinkingParts, block.Text)
+		}
+	}
+	text := strings.Join(parts, "\n")
+	if hm.Role == "user" && text != "" {
+		text = stripInternalContextBlocks(text)
+		text = stripLocalAgentSkillBlocks(text)
+		text = stripSystemLines(text)
+	}
+	if text == "" {
+		return chatMessage{}, false
+	}
+	return chatMessage{
+		role:        hm.Role,
+		content:     text,
+		thinking:    strings.Join(thinkingParts, "\n"),
+		timestampMs: hm.Timestamp,
+	}, true
 }
 
 // buildCronTranscriptMessages reconstructs a transcript-style message

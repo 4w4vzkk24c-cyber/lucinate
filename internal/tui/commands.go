@@ -351,14 +351,14 @@ func (m *chatModel) handleSlashCommand(text string) (handled bool, cmd tea.Cmd) 
 			action: func() tea.Cmd {
 				return func() tea.Msg {
 					if err := b.SessionDelete(context.Background(), sessionKey); err != nil {
-						return sessionClearedMsg{err: err}
+						return sessionClearedMsg{sessionKey: sessionKey, err: err}
 					}
 					// Create a new session to replace the deleted one.
 					newKey, err := b.CreateSession(context.Background(), agentID, "")
 					if err != nil {
-						return sessionClearedMsg{err: err}
+						return sessionClearedMsg{sessionKey: sessionKey, err: err}
 					}
-					return sessionClearedMsg{err: nil, newSessionKey: newKey}
+					return sessionClearedMsg{sessionKey: sessionKey, newSessionKey: newKey}
 				}
 			},
 		}
