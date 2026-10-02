@@ -153,14 +153,20 @@ func (c chatMessage) staleAt(s renderStamp) bool {
 }
 
 // rerenderCmd returns the command that re-renders the chat's stale rows at
-// its current stamp, or nil when there are none or one is already in flight
-// for that stamp. AppModel.Update is its only caller: every path that can
-// make a row stale (a resize, a theme change, a seed from the cache, a
-// history reply rendered before a resize) ends there, so none of them
-// renders on the UI goroutine and none has to remember to ask.
+// its current stamp, or nil when there are none or a re-render is already
+// in flight. AppModel.Update is its only caller: every path that can make a
+// row stale (a resize, a theme change, a seed from the cache, a history
+// reply rendered before a resize) ends there, so none of them renders on
+// the UI goroutine and none has to remember to ask.
+//
+// One at a time per chat, whatever stamp the one in flight is for: a drag
+// resize is a stream of sizes, and a command per size would render the
+// whole transcript once for each, all at once. The one in flight cannot be
+// cancelled; when it lands its result is out of date, the rows are still
+// stale, and the next Update issues one command for the size by then.
 func (m *chatModel) rerenderCmd() tea.Cmd {
 	stamp := m.stamp()
-	if m.newRenderer == nil || m.rerenderFor == stamp {
+	if m.newRenderer == nil || m.rerenderFor != (renderStamp{}) {
 		return nil
 	}
 	seen := map[string]bool{}

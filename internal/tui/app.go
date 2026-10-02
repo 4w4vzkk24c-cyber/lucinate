@@ -968,7 +968,8 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 			if target == nil {
 				return m, nil
 			}
-			return m, m.replaceChat(target, msg.sessionKey, agentID, msg.agentName, msg.modelID)
+			open := m.replaceChat(target, msg.sessionKey, agentID, msg.agentName, msg.modelID)
+			return m, open
 		}
 		m.state = viewChat
 		m.sidebarFocus = false
@@ -977,7 +978,8 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 		// sidebar must keep rendering the full session list beside
 		// the chat view (not the "Loading <title>..." placeholder).
 		m.sessionsModel.selecting = false
-		return m, m.replaceChat(&m.chatModel, msg.sessionKey, agentID, msg.agentName, msg.modelID)
+		open := m.replaceChat(&m.chatModel, msg.sessionKey, agentID, msg.agentName, msg.modelID)
+		return m, open
 
 	case cronTranscriptMsg:
 		// Cron-isolated runs don't keep a queryable chat session, so

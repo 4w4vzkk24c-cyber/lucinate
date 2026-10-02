@@ -103,9 +103,14 @@ was large, on every resize.
   stale. There is no per-chat "rendered at" value: one was tried in design and could not
   represent a history reply rendered before a resize landing after it.
 - **`AppModel.Update` is the only place a re-render is asked for.** After every message it calls
-  `chatModel.rerenderCmd()`, which returns a command when a row is stale and none is in flight for
-  the current stamp. Nothing else has to remember to ask, and `setSize`, `seedHistory` and the
-  message handlers render nothing.
+  `chatModel.rerenderCmd()`, which returns a command when a row is stale and no re-render is in
+  flight. Nothing else has to remember to ask, and `setSize`, `seedHistory` and the message
+  handlers render nothing.
+- **One re-render at a time per chat.** A drag resize is a stream of sizes; a command per size
+  would render the whole transcript once for each, in parallel. The one in flight cannot be
+  cancelled, so its result arrives out of date, changes nothing, and one more command is issued
+  for the size by then. There is no cap on the bytes one command renders: it is off the UI
+  goroutine and never concurrent with another for the same chat.
 - **The result is matched by source text, never by index.** A result for a stamp the chat has left
   changes nothing; rows it did not cover stay stale and the next `Update` asks again. A source the
   renderer rejects is stamped so it is not asked for twice.

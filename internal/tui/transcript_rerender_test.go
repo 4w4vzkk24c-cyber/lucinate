@@ -201,20 +201,33 @@ func TestRerender_SupersededResultIsDiscarded(t *testing.T) {
 
 	m, first := rerenderStep(m, tea.WindowSizeMsg{Width: 100, Height: 40})
 	stale := rerenderOne(t, first)
-	m, second := rerenderStep(m, tea.WindowSizeMsg{Width: 120, Height: 40})
-	current := rerenderOne(t, second)
 
-	m, _ = rerenderStep(m, stale)
+	// A drag resize is a stream of sizes. While one re-render is in
+	// flight none of them starts another: each would render the whole
+	// transcript, all at once.
+	for _, width := range []int{104, 110, 116, 120} {
+		var cmd tea.Cmd
+		m, cmd = rerenderStep(m, tea.WindowSizeMsg{Width: width, Height: 40})
+		if n := len(rerenderResults(cmd)); n != 0 {
+			t.Fatalf("a resize to %d issued %d re-renders while one was in flight", width, n)
+		}
+	}
+
+	m, followUp := rerenderStep(m, stale)
 	if after := rerenderSnapshot(m.chatModel); !rerenderSame(before, after) {
 		t.Error("a re-render for a width the pane has left was applied")
 	}
-	if m.chatModel.rerenderFor != m.chatModel.stamp() {
-		t.Error("after a superseded result no re-render is in flight for the pane's width")
+	current := rerenderOne(t, followUp)
+	if current.stamp != m.chatModel.stamp() {
+		t.Fatalf("the follow-up re-render is for %+v, want the pane's width now %+v", current.stamp, m.chatModel.stamp())
 	}
 
-	m = w1Deliver(m, current)
+	m, last := rerenderStep(m, current)
 	if got := rerenderSnapshot(m.chatModel); got[0].stamp != m.chatModel.stamp() {
 		t.Errorf("the row carries %+v after the current result, want %+v", got[0].stamp, m.chatModel.stamp())
+	}
+	if rerenderInFlight(m) || len(rerenderResults(last)) != 0 {
+		t.Error("a re-render was issued after the rows converged")
 	}
 }
 
@@ -403,14 +416,19 @@ func TestRerender_FailedRenderIsNotRetried(t *testing.T) {
 	}
 }
 
-// One re-render at a time per stamp: asking twice issues once.
-func TestRerender_IsIssuedOncePerStamp(t *testing.T) {
+// One re-render at a time per chat: asking again issues nothing while one
+// is in flight, for the same stamp or for another.
+func TestRerender_OneAtATime(t *testing.T) {
 	m := rerenderChat(t, &rerenderFactory{})
 	if m.rerenderCmd() == nil {
 		t.Fatal("no re-render was issued for a stale row")
 	}
 	if m.rerenderCmd() != nil {
 		t.Error("a second re-render was issued while one is in flight for the same stamp")
+	}
+	m.setSize(80, 40)
+	if m.rerenderCmd() != nil {
+		t.Error("a second re-render was issued while one is in flight for another stamp")
 	}
 }
 

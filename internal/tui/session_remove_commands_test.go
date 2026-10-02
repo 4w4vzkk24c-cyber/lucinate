@@ -327,6 +327,43 @@ func TestSessionRemove_OutcomeDoesNotChangeTheView(t *testing.T) {
 	}
 }
 
+// sessionCursorKey is the session the sidebar cursor is on.
+func sessionCursorKey(m AppModel) string {
+	if item, ok := m.sessionsModel.list.SelectedItem().(sessionItem); ok {
+		return item.key
+	}
+	return ""
+}
+
+// An in-place follow-up moves the sidebar cursor to the session it opened,
+// unless the operator is using the sidebar: then the cursor is theirs.
+func TestSessionSelect_InPlaceMovesTheCursorOnlyWhenTheSidebarIsUnfocused(t *testing.T) {
+	follow := sessionSelectedMsg{sessionKey: "sess-3", agentName: "Scout", modelID: "model-1", inPlaceOf: "sess-2"}
+
+	m, _ := removeApp(t)
+	m.syncSidebarCursor("sess-1")
+	m = w1Deliver(m, follow)
+	if got := sessionCursorKey(m); got != "sess-3" {
+		t.Errorf("with the chat focused the cursor is on %q, want the session just opened, sess-3", got)
+	}
+
+	m, _ = removeApp(t)
+	m.syncSidebarCursor("sess-1")
+	m.sidebarFocus = true
+	m = w1Deliver(m, follow)
+	if got := sessionCursorKey(m); got != "sess-1" {
+		t.Errorf("with the sidebar focused the cursor was moved to %q, want it left on sess-1", got)
+	}
+
+	m, _ = removeApp(t)
+	m.syncSidebarCursor("sess-1")
+	m = sessionParkBehindTranscript(m)
+	m = w1Deliver(m, follow)
+	if got := sessionCursorKey(m); got != "sess-1" {
+		t.Errorf("a follow-up for the parked chat moved the cursor to %q, want it left on sess-1", got)
+	}
+}
+
 // sessionStartupReplies runs a command tree and reports whether it holds
 // the unkeyed part of a chat's startup (skill discovery stands for it).
 func sessionStartupReplies(cmd tea.Cmd) bool {

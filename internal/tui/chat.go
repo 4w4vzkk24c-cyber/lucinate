@@ -183,7 +183,7 @@ type chatModel struct {
 	renderer           *glamour.TermRenderer              // the UI goroutine's renderer; never handed to a command
 	newRenderer        func(renderStamp) markdownRenderer // builds a command's private renderer; tests replace it to count renders
 	rerenderFor        renderStamp                        // stamp of the re-render in flight; the zero value when there is none
-	stats           *sessionStats
+	stats              *sessionStats
 	modelID            string
 	promptTokens       int // input + cache read + cache write for the latest turn (a per-session snapshot, not cumulative); 0 until first sessions.list refresh
 	contextWindow      int // model context capacity for the active session; 0 when unknown
