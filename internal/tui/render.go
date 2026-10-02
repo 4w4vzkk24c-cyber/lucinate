@@ -37,10 +37,12 @@ func (m *chatModel) updateViewport() {
 	for i, msg := range m.messages {
 		if i > 0 {
 			b.WriteString("\n")
-			// Whitespace separator between sender changes — a blank line
-			// makes turn boundaries obvious at a glance without clutter.
+			// Whitespace between every message block — a blank line
+			// separates consecutive messages regardless of sender, so a
+			// run of same-sender turns never reads as one merged block.
+			// Separator rows (crons view) already carry their own divider.
 			prev := m.messages[i-1].role
-			if prev != msg.role && prev != "separator" && msg.role != "separator" {
+			if prev != "separator" && msg.role != "separator" {
 				b.WriteString("\n")
 			}
 		}

@@ -61,8 +61,10 @@ func TestSelection_HitTest(t *testing.T) {
 	if p, ok := m.hitTest(0, 0, false); !ok || p.line != 0 {
 		t.Fatalf("non-strict top clamp = %+v ok=%v, want line 0", p, ok)
 	}
-	if p, ok := m.hitTest(0, 1+m.viewport.Height()+5, false); !ok || p.line != 2 {
-		t.Fatalf("non-strict bottom clamp = %+v ok=%v, want line 2", p, ok)
+	// Blank lines now sit between messages (spacing rule), so the three-text
+	// fixture renders as 5 lines: the last content line is index 4.
+	if p, ok := m.hitTest(0, 1+m.viewport.Height()+5, false); !ok || p.line != 4 {
+		t.Fatalf("non-strict bottom clamp = %+v ok=%v, want line 4", p, ok)
 	}
 
 	// X clamps to the line's width.
