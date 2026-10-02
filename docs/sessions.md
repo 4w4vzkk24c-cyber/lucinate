@@ -54,6 +54,47 @@ On `chatModel.Init()`, `loadHistory()` and `loadStats()` run as two async comman
 rather than in sequence — neither depends on the other, so serialising them would just add
 latency to the first paint.
 
+## Why transcripts are remembered across switches
+
+Switching sessions builds a fresh `chatModel` and fetches its history. On OpenClaw that fetch can
+be large: a session with an expanded CLI import comes back whole whatever `limit` is asked for
+(2,874 messages and 7 MB measured on one session), so a switch showed "Loading conversation
+history…" for a noticeable moment, every time, including when returning to a session left seconds
+earlier.
+
+Two things keep the switch fast:
+
+- **`fetchHistory` trims before it renders.** It keeps the last `historyLimit` messages the
+  transcript shows and renders only those. Markdown rendering is the per-message cost (about
+  0.5 ms), so it must be bounded by the limit, not by what the gateway chose to send. The download
+  and its parse are not reduced.
+- **`transcriptCache` remembers the last 10 sessions.** A revisit paints from it at once, and the
+  history load that `Init` still issues replaces those rows.
+
+The rules that make the cache safe, each of which was a defect in an earlier draft:
+
+- **One writer.** Only `AppModel.stashChat` writes the cache, when the open chat is replaced, and
+  it stores what that chat held from the gateway (rows with `gen == 0`). An earlier design stored
+  history replies as they arrived; the cache could then hold a load that the chat model had
+  discarded as older than a refresh, and a reply in flight could re-add a session just deleted.
+- **Identify remembered rows by `gen`, never by position.** Replacing them is
+  `mergeHistoryRefresh(fetched, 0)`. Tracking "the first N rows are the seed" panics after
+  `/clear` empties the slice.
+- **A load older than a merged refresh is discarded.** Otherwise a slow initial load overwrites
+  the turn that a later refresh brought in.
+- **An empty reply still replaces.** A session emptied elsewhere must not keep its old rows.
+- **Copy in and out.** `chatModel.setSize` re-renders rows in place; a shared slice would let one
+  chat's resize rewrite another's remembered transcript.
+- **Not remembered:** a chat that never loaded, a cron transcript, an archived or deleted session,
+  the live rows of an unfinished turn, and a chat left over from a previous connection (session
+  keys such as `main` repeat across gateways). A connection change clears the cache.
+
+Session-scoped replies (`historyLoadedMsg`, `historyRefreshMsg`, `sessionClearedMsg`) are routed by
+`AppModel.deliverToChat` ahead of the view-state switch. The view-state routing drops them when
+the operator is in another view or has the sidebar focused, which used to leave a chat on
+"loading" for good; with a cache it would leave stale rows with nothing to show they were stale.
+Each carries the session it belongs to, and a chat ignores one for another session.
+
 ## Compact: server-side vs local streaming
 
 The distinction that catches people out: on OpenClaw the gateway runs the compaction pass
@@ -66,8 +107,10 @@ backends.
 
 `/reset` doesn't clear a session in place; it calls `SessionDelete()` to permanently remove the
 session and then immediately creates a replacement via `CreateSession()`. The new session key
-comes back as `sessionClearedMsg{newSessionKey}` — the chat model reinitialises against a fresh
-key rather than reusing the old one.
+comes back as `sessionClearedMsg{sessionKey, newSessionKey}` — the chat model reinitialises
+against a fresh key rather than reusing the old one. `sessionKey` names the session that was
+reset: a chat that has since moved to another session ignores the reply, where it used to be
+renamed and emptied by it.
 
 ## Queueing gotcha: exec results also drain the queue
 

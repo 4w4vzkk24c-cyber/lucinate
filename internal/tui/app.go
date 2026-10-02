@@ -997,19 +997,19 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 		return m, nil
 
 	case historyLoadedMsg:
-		return m.deliverHistory(msg.sessionKey, msg)
+		return m.deliverToChat(msg.sessionKey, msg)
 
 	case historyRefreshMsg:
-		return m.deliverHistory(msg.sessionKey, msg)
+		return m.deliverToChat(msg.sessionKey, msg)
 
 	case sessionClearedMsg:
-		// /reset deleted this session (and replaced it under a new key),
-		// so its remembered transcript is dead either way. The chat model
-		// applies the outcome only if it is still on that session.
+		// Forget the reset session whether or not the reset succeeded.
+		// /reset is delete-then-recreate: a failure at the recreate step
+		// leaves the session deleted, and the reply cannot say which
+		// step failed. A needless drop costs one cold open; a kept
+		// entry would paint a session that no longer exists.
 		m.transcripts.drop(msg.sessionKey)
-		var cmd tea.Cmd
-		m.chatModel, cmd = m.chatModel.Update(msg)
-		return m, cmd
+		return m.deliverToChat(msg.sessionKey, msg)
 
 	case sessionRenamedMsg:
 		slog.Debug("session renamed", "session", msg.sessionKey, "err", msg.err, "open", m.chatModel.sessionKey)
@@ -1403,14 +1403,15 @@ func (m *AppModel) stashChat() {
 	m.transcripts.put(out.sessionKey, rows)
 }
 
-// deliverHistory hands a history reply to the chat it belongs to, whatever
-// view is showing and wherever focus is. It runs ahead of the view-state
-// routing because that routing drops the reply when the operator is in
-// another view or has the sidebar focused, which would leave a chat on
-// "loading", or on rows painted from the cache, with nothing to correct it.
-// A reply for the chat parked behind a cron transcript goes to that chat; a
-// reply for neither is dropped.
-func (m AppModel) deliverHistory(sessionKey string, msg tea.Msg) (AppModel, tea.Cmd) {
+// deliverToChat hands a reply about one session (its history, or the outcome
+// of resetting it) to the chat that is on that session, whatever view is
+// showing and wherever focus is. It runs ahead of the view-state routing
+// because that routing drops the reply when the operator is in another view
+// or has the sidebar focused, which would leave a chat on "loading", or on
+// rows painted from the cache, with nothing to correct it. A reply for the
+// chat parked behind a cron transcript goes to that chat; a reply for
+// neither is dropped.
+func (m AppModel) deliverToChat(sessionKey string, msg tea.Msg) (AppModel, tea.Cmd) {
 	var cmd tea.Cmd
 	switch {
 	case sessionKey == m.chatModel.sessionKey:
@@ -1418,7 +1419,7 @@ func (m AppModel) deliverHistory(sessionKey string, msg tea.Msg) (AppModel, tea.
 	case m.cronsReturnValid && sessionKey == m.cronsReturnChat.sessionKey:
 		m.cronsReturnChat, cmd = m.cronsReturnChat.Update(msg)
 	default:
-		slog.Debug("dropped a history reply for a session that is not open", "for", sessionKey, "open", m.chatModel.sessionKey)
+		slog.Debug("dropped a reply for a session that is not open", "for", sessionKey, "open", m.chatModel.sessionKey)
 	}
 	return m, cmd
 }

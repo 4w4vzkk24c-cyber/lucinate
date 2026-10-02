@@ -370,6 +370,50 @@ func TestTranscriptCache_ResetOfTheOpenSessionStillApplies(t *testing.T) {
 	}
 }
 
+// The chat model holds the same rule itself, so it is safe however a reset
+// reply reaches it.
+func TestChatModel_IgnoresAResetForAnotherSession(t *testing.T) {
+	m := newTestChatModel()
+	m.sessionKey = "sess-3"
+	m.messages = []chatMessage{{role: "user", content: "still here"}}
+
+	updated, _ := m.Update(sessionClearedMsg{sessionKey: "sess-2", newSessionKey: "sess-2-fresh"})
+
+	if updated.sessionKey != "sess-3" || len(updated.messages) != 1 {
+		t.Errorf("a reset for sess-2 changed a chat on sess-3: key %q, %d rows", updated.sessionKey, len(updated.messages))
+	}
+}
+
+// A reset reply that lands while a cron transcript is open belongs to the
+// chat parked behind it; dropping it would leave that chat on a deleted key.
+func TestTranscriptCache_ResetReachesTheParkedChat(t *testing.T) {
+	m, _ := tcacheVisited(t) // sess-3 open
+	m.cronsReturnChat, m.cronsReturnValid = m.chatModel, true
+	m.chatModel = newChatModel(m.backend, "", "agent-1", "Scout", "", config.DefaultPreferences(), true, "", "", false)
+	m.chatModel.transcript = true
+
+	m = w1Deliver(m, sessionClearedMsg{sessionKey: "sess-3", newSessionKey: "sess-3-fresh"})
+
+	if m.cronsReturnChat.sessionKey != "sess-3-fresh" {
+		t.Errorf("the parked chat is on %q after its reset, want sess-3-fresh", m.cronsReturnChat.sessionKey)
+	}
+	if m.chatModel.sessionKey != "" {
+		t.Errorf("the reset renamed the cron transcript to %q", m.chatModel.sessionKey)
+	}
+}
+
+// A reset that fails still forgets the session: the delete step may have
+// succeeded, and a needless drop costs only one cold open.
+func TestTranscriptCache_FailedResetStillForgets(t *testing.T) {
+	m, _ := tcacheVisited(t) // sess-2 remembered
+
+	m = w1Deliver(m, sessionClearedMsg{sessionKey: "sess-2", err: fmt.Errorf("create failed after delete")})
+
+	if _, ok := m.transcripts.get("sess-2"); ok {
+		t.Error("a reset that failed part-way left the session remembered")
+	}
+}
+
 // (g) A connection change empties the cache, and the chat left over from
 // the old connection is not remembered when the first new chat opens.
 func TestTranscriptCache_ConnectionChangeForgetsEverything(t *testing.T) {
@@ -385,6 +429,32 @@ func TestTranscriptCache_ConnectionChangeForgetsEverything(t *testing.T) {
 
 	if _, ok := m.transcripts.get("sess-3"); ok {
 		t.Error("the old connection's chat was remembered when the first new chat opened")
+	}
+}
+
+// (g) A successful connect also starts with nothing remembered: a reconnect
+// can publish a new backend without passing through the connections picker.
+func TestTranscriptCache_ConnectForgetsEverything(t *testing.T) {
+	m, _ := tcacheVisited(t) // sess-2 remembered
+
+	m, _ = m.handleConnectResult(connectResultMsg{backend: &w1ProbeBackend{}})
+
+	if _, ok := m.transcripts.get("sess-2"); ok {
+		t.Error("a new connection kept the previous connection's transcripts")
+	}
+}
+
+// (h) The post-turn refresh takes the same route as the initial load.
+func TestTranscriptCache_HistoryRefreshIsDeliveredWithTheSidebarFocused(t *testing.T) {
+	m, replies := tcacheVisited(t) // sess-3 open and loaded
+	replies["sess-3"] = tcacheHistoryJSON("sess-3 after the turn")
+	refresh := m.chatModel.refreshHistoryAt(m.chatModel.gen)()
+	m.sidebarFocus = true
+
+	m = w1Deliver(m, refresh)
+
+	if got := tcacheTranscript(m); !strings.Contains(got, "sess-3 after the turn") {
+		t.Errorf("a refresh delivered while the sidebar had focus was not applied: %q", got)
 	}
 }
 
