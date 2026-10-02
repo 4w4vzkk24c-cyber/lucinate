@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"errors"
-	"runtime"
 	"testing"
 	"time"
 
@@ -390,7 +389,7 @@ func TestAppModel_RoutesShowConnectionsMsg(t *testing.T) {
 	conn, _ := store.Add(config.ConnectionFields{Name: "home", Type: config.ConnTypeOpenClaw, URL: "https://home.example.com"})
 	store.MarkUsed(conn.ID)
 
-	var publishedNil bool
+	publishedNil := make(chan struct{}, 1)
 	m := NewApp(nil, AppOptions{
 		Store: store,
 		BackendFactory: func(*config.Connection) (backend.Backend, error) {
@@ -398,7 +397,7 @@ func TestAppModel_RoutesShowConnectionsMsg(t *testing.T) {
 		},
 		OnBackendChanged: func(b backend.Backend) {
 			if b == nil {
-				publishedNil = true
+				publishedNil <- struct{}{}
 			}
 		},
 	})
@@ -415,12 +414,12 @@ func TestAppModel_RoutesShowConnectionsMsg(t *testing.T) {
 	if m.backend != nil {
 		t.Errorf("expected backend cleared, got %T", m.backend)
 	}
-	// The OnBackendChanged callback runs in a goroutine — give it a
-	// turn to fire. A short blocking nudge is fine for a unit test.
-	for i := 0; i < 50 && !publishedNil; i++ {
-		runtime.Gosched()
-	}
-	if !publishedNil {
+	// The OnBackendChanged callback runs in a goroutine, so wait on the
+	// channel it signals. A shared bool here was a data race: the test
+	// read it while the callback goroutine wrote it.
+	select {
+	case <-publishedNil:
+	case <-time.After(2 * time.Second):
 		t.Error("expected OnBackendChanged(nil) to publish backend tear-down")
 	}
 }
