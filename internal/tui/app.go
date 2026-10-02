@@ -765,6 +765,13 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 		if m.sessionsModel.backend != nil {
 			var cmd tea.Cmd
 			m.sessionsModel, cmd = m.sessionsModel.Update(msg)
+			// A reload rebuilds the list and parks its cursor on the
+			// first row. Beside the chat, the highlight means "the
+			// session you have open", so put it back there — unless the
+			// operator is steering the sidebar themselves.
+			if _, reloaded := msg.(sessionsLoadedMsg); reloaded && m.state == viewChat && !m.sidebarFocus {
+				m.syncSidebarCursor(m.chatModel.sessionKey)
+			}
 			return m, cmd
 		}
 		return m, nil
@@ -974,15 +981,30 @@ func (m AppModel) update(msg tea.Msg) (AppModel, tea.Cmd) {
 
 	case newSessionCreatedMsg:
 		if msg.err != nil {
+			if m.state == viewChat {
+				// Asked for from the chat (/new): say why in the chat
+				// and leave the open session and the sidebar as they are.
+				m.chatModel.appendMessage(chatMessage{
+					role:   "system",
+					errMsg: fmt.Sprintf("Could not start a new session: %v", msg.err),
+				})
+				m.chatModel.updateViewport()
+				return m, nil
+			}
 			m.sessionsModel.err = msg.err
 			m.sessionsModel.loading = false
 			return m, nil
 		}
 		_, _ = m.chatModel.stopRecording()
+		slog.Debug("session switch", "from", m.chatModel.sessionKey, "to", msg.sessionKey, "new", true)
 		m.chatModel = newChatModel(m.backend, msg.sessionKey, m.sessionsModel.agentID, msg.agentName, msg.modelID, m.prefs, m.hideInput, connectionLabel(m.activeConn), "", m.brightCursor)
 		m.state = viewChat
+		m.sidebarFocus = false
 		m.applyChatLayout()
-		return m, m.chatModel.Init()
+		// Reload the sidebar so the new session is listed (and, via the
+		// sessionsLoadedMsg handler, highlighted) without waiting for a
+		// gateway event.
+		return m, tea.Batch(m.chatModel.Init(), m.sessionsModel.loadSessions())
 
 	case goBackFromSessionsMsg:
 		m.state = viewChat

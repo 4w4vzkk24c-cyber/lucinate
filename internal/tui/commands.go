@@ -53,7 +53,7 @@ type pendingNavConfirm struct {
 // hint surfaces the picker first, "/model" before "/models" likewise.
 // Tab now extends to the longest common prefix and the completion menu
 // shows every candidate, so the curated order no longer rules Tab.
-var slashCommands = []string{"/agents", "/agent", "/attach", "/cancel", "/clear", "/commands", "/compact", "/config", "/connections", "/crons", "/cron", "/exit", "/export", "/help", "/header", "/model", "/models", "/mouse", "/quit", "/record", "/reset", "/routines", "/routine", "/sessions", "/settings", "/skills", "/stats", "/status", "/think"}
+var slashCommands = []string{"/agents", "/agent", "/attach", "/cancel", "/clear", "/commands", "/compact", "/config", "/connections", "/crons", "/cron", "/exit", "/export", "/help", "/header", "/model", "/models", "/mouse", "/new", "/quit", "/record", "/reset", "/routines", "/routine", "/sessions", "/settings", "/skills", "/stats", "/status", "/think"}
 
 // thinkingLevels is the ordered list of valid thinking levels.
 var thinkingLevels = []string{"off", "minimal", "low", "medium", "high"}
@@ -81,6 +81,7 @@ const helpBody = `/quit, /exit — quit lucinate
 /model <name> — switch model directly
 /models — alias for /model
 /mouse on|off — mouse capture (on, the default: wheel scrolls history, drag selects & copies; off: native terminal selection)
+/new — start a new session with this agent and open it
 /record on|off — toggle live transcript capture for this session (bare /record shows state)
 /reset — delete session and start fresh
 /sessions — browse and restore previous sessions
@@ -329,6 +330,11 @@ func (m *chatModel) handleSlashCommand(text string) (handled bool, cmd tea.Cmd) 
 		return true, m.gateNavigation("Opening crons", false, func() tea.Msg {
 			return showCronsMsg{filterAgentID: filterAgentID, filterLabel: filterLabel}
 		})
+	case "/new":
+		// Replaces the chat, so queued messages would be dropped: gate it
+		// like every other navigation that does.
+		return true, m.gateNavigation("Starting a new session", true,
+			createSessionCmd(m.backend, m.agentID, m.agentName, m.modelID))
 	case "/sessions":
 		agentID := m.agentID
 		agentName := m.agentName

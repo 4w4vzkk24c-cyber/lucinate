@@ -425,6 +425,29 @@ func (m sessionsModel) loadSessions() tea.Cmd {
 	}
 }
 
+// newSessionTimeout bounds the gateway round-trip that creates a session.
+const newSessionTimeout = 15 * time.Second
+
+// createSessionCmd asks the backend for a new session with this agent and
+// reports the outcome as newSessionCreatedMsg. Shared by the sessions
+// browser's "new session" action and the chat's /new command. The key is
+// the creation time, which is what the gateway shows until a title is
+// derived.
+func createSessionCmd(b backend.Backend, agentID, agentName, modelID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), newSessionTimeout)
+		defer cancel()
+		key := time.Now().Format("2006-01-02T15:04:05")
+		sessionKey, err := b.CreateSession(ctx, agentID, key)
+		return newSessionCreatedMsg{
+			sessionKey: sessionKey,
+			agentName:  agentName,
+			modelID:    modelID,
+			err:        err,
+		}
+	}
+}
+
 func (m sessionsModel) Init() tea.Cmd {
 	return m.loadSessions()
 }
@@ -570,20 +593,7 @@ func (m sessionsModel) TriggerAction(id string) (sessionsModel, tea.Cmd) {
 		if m.loading || m.err != nil {
 			return m, nil
 		}
-		b := m.backend
-		agentID := m.agentID
-		agentName := m.agentName
-		modelID := m.modelID
-		return m, func() tea.Msg {
-			key := time.Now().Format("2006-01-02T15:04:05")
-			sessionKey, err := b.CreateSession(context.Background(), agentID, key)
-			return newSessionCreatedMsg{
-				sessionKey: sessionKey,
-				agentName:  agentName,
-				modelID:    modelID,
-				err:        err,
-			}
-		}
+		return m, createSessionCmd(m.backend, m.agentID, m.agentName, m.modelID)
 	case "back":
 		return m, func() tea.Msg { return goBackFromSessionsMsg{} }
 	case "retry":
