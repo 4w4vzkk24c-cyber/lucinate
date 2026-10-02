@@ -600,6 +600,22 @@ func (c *Client) ChatSend(ctx context.Context, sessionKey, message, idemKey stri
 	})
 }
 
+// historyMaxChars is the per-message text cap asked of chat.history. The
+// gateway's default is 8,000, past which it cuts the text and appends
+// "...(truncated)..."; this is the maximum its schema accepts, so messages
+// come back whole.
+const historyMaxChars = 500_000
+
+// chatHistoryParams builds the chat.history request.
+func chatHistoryParams(sessionKey string, limit int) protocol.ChatHistoryParams {
+	maxChars := historyMaxChars
+	return protocol.ChatHistoryParams{
+		SessionKey: sessionKey,
+		Limit:      &limit,
+		MaxChars:   &maxChars,
+	}
+}
+
 // ChatHistory retrieves recent chat history for a session.
 func (c *Client) ChatHistory(ctx context.Context, sessionKey string, limit int) (json.RawMessage, error) {
 	gw, ctx, cancel, err := c.rpc(ctx)
@@ -607,10 +623,7 @@ func (c *Client) ChatHistory(ctx context.Context, sessionKey string, limit int) 
 		return nil, err
 	}
 	defer cancel()
-	return gw.ChatHistory(ctx, protocol.ChatHistoryParams{
-		SessionKey: sessionKey,
-		Limit:      &limit,
-	})
+	return gw.ChatHistory(ctx, chatHistoryParams(sessionKey, limit))
 }
 
 // SessionUsage retrieves usage data for a session.
