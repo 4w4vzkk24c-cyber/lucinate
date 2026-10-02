@@ -111,8 +111,9 @@ was large, on every resize.
   cancelled, so its result arrives out of date, changes nothing, and one more command is issued
   for the size by then. Only a result at the stamp in flight ends it, so a late result from a
   chat this one replaced on the same key (two cron transcripts) does not. The one case left is
-  such a result at the very same stamp, which can let one extra command start; it is bounded at
-  two and corrects itself. There is no cap on the bytes one command renders: it runs off the UI
+  such a result at the very same stamp: each one can let one extra command start beside the one
+  running. That needs a transcript replaced while its command runs and the pane back at the same
+  size; it never sticks and corrects itself, and no test pins it. There is no cap on the bytes one command renders: it runs off the UI
   goroutine.
 - **The result is matched by source text, never by index.** A result for a stamp the chat has left
   changes nothing; rows it did not cover stay stale and the next `Update` asks again. A source the
