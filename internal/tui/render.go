@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"image/color"
+	"math"
 	"strings"
 	"time"
 
@@ -51,7 +53,7 @@ func (m *chatModel) updateViewport() {
 			prefixIndent, wrapWidth := m.writePrefix(&mb, userPrefixStyle, userLabel)
 			body := wordWrap(msg.content, wrapWidth)
 			mb.WriteString(indentMultiline(body, prefixIndent))
-			b.WriteString(barLines(mb.String(), userPrefixStyle))
+			b.WriteString(barLines(mb.String(), m.senderBar(userSenderClr)))
 
 		case "assistant":
 			var mb strings.Builder
@@ -86,7 +88,7 @@ func (m *chatModel) updateViewport() {
 					mb.WriteString(indentMultiline(body, prefixIndent))
 				}
 			}
-			b.WriteString(barLines(mb.String(), assistantPrefixStyle))
+			b.WriteString(barLines(mb.String(), m.senderBar(assistantSenderClr)))
 
 		case "system":
 			if msg.errMsg != "" {
@@ -172,11 +174,33 @@ func (m *chatModel) messageWidth() int {
 	return m.width - chatMarginCells - messageBarCells
 }
 
+// senderBarStrength is how much of the sender's colour the bar keeps; the
+// rest is the pane background. At full strength a bar on every line pulled
+// the eye off the text (operator, 2026-10-02: mute by 80% or more).
+const senderBarStrength = 0.2
+
+// senderBar returns the bar colour for a sender: their colour, muted toward
+// this model's background so it reads as a tint in light and dark alike.
+func (m *chatModel) senderBar(sender color.Color) color.Color {
+	return mixColour(sender, m.effectivePalette().background, senderBarStrength)
+}
+
+// mixColour blends fg over bg, keeping the given fraction of fg.
+func mixColour(fg, bg color.Color, keep float64) color.Color {
+	fr, fg8, fb, _ := fg.RGBA()
+	br, bg8, bb, _ := bg.RGBA()
+	blend := func(f, b uint32) uint8 {
+		const sixteenToEight = 257 // RGBA() channels are 16-bit
+		return uint8(math.Round((float64(f)*keep + float64(b)*(1-keep)) / sixteenToEight))
+	}
+	return color.RGBA{R: blend(fr, br), G: blend(fg8, bg8), B: blend(fb, bb), A: 0xff}
+}
+
 // barLines puts the sender bar at the start of every line of a rendered
 // message. A trailing empty line is left alone so a message that ends in a
 // newline does not grow a bar with nothing beside it.
-func barLines(s string, style lipgloss.Style) string {
-	bar := style.Render(messageBar)
+func barLines(s string, barColour color.Color) string {
+	bar := lipgloss.NewStyle().Foreground(barColour).Render(messageBar)
 	lines := strings.Split(s, "\n")
 	for i, line := range lines {
 		if i == len(lines)-1 && line == "" && i > 0 {
@@ -512,7 +536,7 @@ func (m *chatModel) renderPendingMessages() string {
 		prefixIndent, wrapWidth := m.writePrefix(&mb, pendingPrefixStyle, userLabel)
 		body := wordWrap(text, wrapWidth)
 		mb.WriteString(pendingBodyStyle.Render(indentMultiline(body, prefixIndent)))
-		b.WriteString(barLines(mb.String(), pendingPrefixStyle))
+		b.WriteString(barLines(mb.String(), m.senderBar(userSenderClr)))
 	}
 	return b.String()
 }

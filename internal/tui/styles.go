@@ -181,6 +181,9 @@ type chatPalette struct {
 	errClr      color.Color
 	execClr     color.Color
 	localExcClr color.Color
+	// background is the pane background this palette is drawn on. Nothing
+	// paints it; muted tints (the sender bar) blend toward it.
+	background color.Color
 }
 
 // darkPalette mirrors the package-level dark colour values exactly — a
@@ -193,6 +196,7 @@ var darkPalette = chatPalette{
 	errClr:      errClr,
 	execClr:     execClr,
 	localExcClr: localExcClr,
+	background:  lipgloss.Color("#002b36"), // Solarized Base03
 }
 
 // lightPalette is a light-background variant: darker accents and text
@@ -204,6 +208,7 @@ var lightPalette = chatPalette{
 	errClr:      lipgloss.Color("#dc322f"), // Solarized Red
 	execClr:     lipgloss.Color("#cb4b16"), // Solarized Orange
 	localExcClr: lipgloss.Color("#dc322f"), // Solarized Red (shares Red; prefix+border distinguish)
+	background:  lipgloss.Color("#fdf6e3"), // Solarized Base3
 }
 
 var (

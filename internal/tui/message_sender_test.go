@@ -17,6 +17,13 @@ import (
 const (
 	senderTestCyan   = "38;2;42;161;152" // #2aa198
 	senderTestYellow = "38;2;181;137;0"  // #b58900
+
+	// The bar is the sender colour at 20% over the Solarized background
+	// (operator, 2026-10-02: full-strength bars were distracting).
+	senderTestDarkCyanBar    = "38;2;8;67;74"     // 20% #2aa198 over base03 #002b36
+	senderTestDarkYellowBar  = "38;2;36;62;43"    // 20% #b58900 over base03
+	senderTestLightCyanBar   = "38;2;211;229;212" // 20% #2aa198 over base3 #fdf6e3
+	senderTestLightYellowBar = "38;2;239;224;182" // 20% #b58900 over base3
 )
 
 func senderTestChat(width int, agentName string, messages ...chatMessage) *chatModel {
@@ -105,21 +112,64 @@ func TestMessageSender_ColoursAreCyanForUserYellowForAssistant(t *testing.T) {
 		chatMessage{role: "user", content: senderTestLong},
 		chatMessage{role: "assistant", content: "line one\nline two\nline three", rendered: true},
 	)
-	for _, tc := range []struct{ needle, want, wrong string }{
-		{"omega", senderTestCyan, senderTestYellow},
-		{"line two", senderTestYellow, senderTestCyan},
+	senderTestAssertBars(t, m, "omega", senderTestDarkCyanBar)
+	senderTestAssertBars(t, m, "line two", senderTestDarkYellowBar)
+
+	// The names stay at full strength: they are the word that says who
+	// spoke, and a muted word is an unreadable one.
+	for _, tc := range []struct{ needle, name, want string }{
+		{"alpha", "zane", senderTestCyan},
+		{"line one", "vesper", senderTestYellow},
 	} {
-		for i, line := range senderTestBlock(t, m, tc.needle) {
-			bar := line[:strings.Index(line, messageBar)]
-			if !strings.Contains(bar, tc.want) || strings.Contains(bar, tc.wrong) {
-				t.Errorf("%q line %d: bar styled %q, want colour %s", tc.needle, i, bar, tc.want)
-			}
+		first := senderTestBlock(t, m, tc.needle)[0]
+		styling := first[strings.Index(first, messageBar):strings.Index(first, tc.name)]
+		if !strings.Contains(styling, tc.want) {
+			t.Errorf("name %q is not at full strength %s: %q", tc.name, tc.want, styling)
 		}
 	}
-	userFirst := senderTestBlock(t, m, "alpha")[0]
-	name := userFirst[:strings.Index(userFirst, "zane")]
-	if !strings.Contains(name, senderTestCyan) {
-		t.Errorf("user name is not cyan: %q", userFirst[:40])
+}
+
+// senderTestAssertBars checks every bar of the message containing needle is
+// drawn in exactly the wanted colour.
+func senderTestAssertBars(t *testing.T, m *chatModel, needle, want string) {
+	t.Helper()
+	for i, line := range senderTestBlock(t, m, needle) {
+		bar := line[:strings.Index(line, messageBar)]
+		if !strings.Contains(bar, want+"m") {
+			t.Errorf("%q line %d: bar styled %q, want %s", needle, i, bar, want)
+		}
+	}
+}
+
+// The mute blends toward the background, so it must follow the palette: a
+// bar muted toward the dark base on a light terminal would be the loudest
+// thing on screen.
+func TestMessageSender_BarMuteFollowsThePalette(t *testing.T) {
+	m := senderTestChat(120, "main")
+	light := lightPalette
+	m.palette = &light
+	m.messages = []chatMessage{
+		{role: "user", content: senderTestLong},
+		{role: "assistant", content: "line one\nline two\nline three", rendered: true},
+	}
+	m.pendingMessages = []string{"queued one\nqueued two"}
+	m.updateViewport()
+
+	senderTestAssertBars(t, m, "omega", senderTestLightCyanBar)
+	senderTestAssertBars(t, m, "line two", senderTestLightYellowBar)
+	for i, line := range strings.Split(m.renderPendingMessages(), "\n") {
+		if bar := line[:strings.Index(line, messageBar)]; !strings.Contains(bar, senderTestLightCyanBar+"m") {
+			t.Errorf("pending line %d: bar styled %q, want %s", i, bar, senderTestLightCyanBar)
+		}
+	}
+}
+
+func TestMessageSender_BarIsMutedAtLeastEightyPercent(t *testing.T) {
+	if senderBarStrength > 0.2 {
+		t.Errorf("sender bar keeps %.0f%% of its colour; the operator asked for 20%% or less", senderBarStrength*100)
+	}
+	if senderBarStrength <= 0 {
+		t.Error("a bar with no colour left no longer says who spoke")
 	}
 }
 
