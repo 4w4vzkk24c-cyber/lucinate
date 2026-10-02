@@ -13,6 +13,7 @@ import (
 	"charm.land/bubbles/v2/list"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/lucinate-ai/lucinate/internal/backend"
 	"github.com/lucinate-ai/lucinate/internal/config"
@@ -91,6 +92,10 @@ type sessionGroupHeader struct {
 
 func (h sessionGroupHeader) FilterValue() string { return "" }
 
+// sessionRowChromeCells is what a session row spends before its title: the
+// two-cell cursor prefix and the two-cell activity indicator.
+const sessionRowChromeCells = 4
+
 // sessionDelegate renders each item in the session list.
 type sessionDelegate struct{}
 
@@ -115,19 +120,11 @@ func (d sessionDelegate) Render(w io.Writer, m list.Model, index int, item list.
 			displayTitle = cleanSessionDisplayKey(displayTitle)
 		}
 
-		// Available width for title inside list:
-		// item width is m.Width(), subtract cursor prefix (2 chars) and indicator (2 chars)
-		maxTitleLen := m.Width() - 4
-		if maxTitleLen < 6 {
-			maxTitleLen = 6
-		}
-		if len(displayTitle) > maxTitleLen {
-			if maxTitleLen > 3 {
-				displayTitle = displayTitle[:maxTitleLen-1] + "…"
-			} else {
-				displayTitle = displayTitle[:maxTitleLen]
-			}
-		}
+		// The title gets what the cursor prefix and the indicator leave.
+		// Truncation is by display cells, never bytes: a byte slice cuts
+		// a CJK or emoji title mid-rune and emits invalid UTF-8.
+		titleCells := max(m.Width()-sessionRowChromeCells, 0)
+		displayTitle = ansi.Truncate(displayTitle, titleCells, "…")
 
 		// Activity indicator:
 		// ● (accent/amber) if active, ○ (subtle) if unknown/omitted (*bool == nil), or space if idle (false)
@@ -156,16 +153,17 @@ func (d sessionDelegate) Render(w io.Writer, m list.Model, index int, item list.
 			}
 		}
 
+		// Pad to the pane: every row is exactly m.Width() cells, so the
+		// sidebar's rendered width never depends on its longest title.
+		fill := strings.Repeat(" ", max(titleCells-ansi.StringWidth(displayTitle), 0))
 		if index == m.Index() {
 			titleStr := lipgloss.NewStyle().
 				Foreground(accent).
 				Bold(true).
 				Render(displayTitle)
-			fmt.Fprint(w, "> "+indicator+titleStr)
+			fmt.Fprint(w, "> "+indicator+titleStr+fill)
 		} else {
-			titleStr := lipgloss.NewStyle().
-				Render(displayTitle)
-			fmt.Fprint(w, "  "+indicator+titleStr)
+			fmt.Fprint(w, "  "+indicator+displayTitle+fill)
 		}
 	}
 }

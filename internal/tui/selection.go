@@ -47,8 +47,17 @@ type selectionState struct {
 // chrome below the viewport) — used for the initial click so presses on the
 // input area don't start a selection; strict=false clamps into content bounds
 // — used for the drag head so dragging past an edge selects to that edge.
+//
+// x is a screen column as the mouse reports it. The pane does not start at
+// column 0 when the sessions sidebar is beside it, so x is first moved into
+// the pane's own columns; a strict test left of the pane (on the sidebar) is
+// a miss.
 func (m *chatModel) hitTest(x, y int, strict bool) (selPoint, bool) {
 	if len(m.selLines) == 0 {
+		return selPoint{}, false
+	}
+	x -= m.originX
+	if strict && x < 0 {
 		return selPoint{}, false
 	}
 	row := y - 1 // row 0 is the header

@@ -6,8 +6,21 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/olekukonko/tablewriter"
 )
+
+// fitPane makes every line of a rendered pane exactly width display cells:
+// longer lines are cut, shorter ones padded. A pane joined beside another
+// must have a fixed width, or its neighbour's left edge moves with content.
+func fitPane(s string, width int) string {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		line = ansi.Truncate(line, width, "")
+		lines[i] = line + strings.Repeat(" ", max(width-ansi.StringWidth(line), 0))
+	}
+	return strings.Join(lines, "\n")
+}
 
 func (m *chatModel) updateViewport() {
 	var b strings.Builder

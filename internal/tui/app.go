@@ -1316,13 +1316,23 @@ func (m *AppModel) applyChatLayout() {
 	// zero value, and the zero-value list panics on SetSize (nil
 	// delegate in bubbles updatePagination) — the same invariant the
 	// WindowSizeMsg switch above protects for the other views.
-	if m.width >= sidebarMinCols && m.sessionsModel.backend != nil {
-		w := clampSidebarWidth(m.width)
+	w := m.sidebarWidth()
+	m.chatModel.originX = w
+	if w > 0 {
 		m.sessionsModel.setSize(w, m.height)
-		m.chatModel.setSize(m.width-w, m.height)
-		return
 	}
-	m.chatModel.setSize(m.width, m.height)
+	m.chatModel.setSize(m.width-w, m.height)
+}
+
+// sidebarWidth is the sessions sidebar's pane width in the chat view, or 0
+// when there is no sidebar (narrow terminal, or the list was never
+// constructed). Layout, render and mouse hit-testing all read this one
+// value: the chat pane starts at exactly this column.
+func (m AppModel) sidebarWidth() int {
+	if m.width < sidebarMinCols || m.sessionsModel.backend == nil {
+		return 0
+	}
+	return clampSidebarWidth(m.width)
 }
 
 // connectTimeoutFromPrefs returns the per-attempt deadline for the
@@ -1513,12 +1523,15 @@ func (m AppModel) View() tea.View {
 	case viewSelect:
 		v = tea.NewView(m.selectModel.View())
 	case viewChat:
-		if m.width >= sidebarMinCols {
+		if w := m.sidebarWidth(); w > 0 {
 			// Wide terminal: sessions sidebar beside the chat view
 			// (W1-AC1). Both panes render concurrently; the sidebar is
-			// the existing sessionsModel list, clamped narrow.
+			// the existing sessionsModel list, clamped narrow and fitted
+			// to exactly w cells — a join pads only to the pane's widest
+			// line, which would start the chat pane at a column that
+			// moves with the session titles.
 			v = tea.NewView(lipgloss.JoinHorizontal(lipgloss.Top,
-				m.sessionsModel.View(), m.chatModel.View()))
+				fitPane(m.sessionsModel.View(), w), m.chatModel.View()))
 		} else {
 			// Narrow fallback: the pre-W1 chat-only render, byte for
 			// byte (W1-AC6).

@@ -165,6 +165,7 @@ type chatModel struct {
 	sel                selectionState // in-app mouse drag selection over the transcript; see selection.go
 	selLines           []string       // rendered content lines (styled, unpadded, pre-highlight); rebuilt by updateViewport; the hit-test and copy source for the selection
 	viewportTopPad     int            // blank rows updateViewport prepends to bottom-anchor short content; hit-testing subtracts it
+	originX            int            // screen column of this pane's left edge (the sidebar's width, or 0); mouse X is terminal-absolute and hit-testing subtracts it
 	backend            backend.Backend
 	connName           string // active connection name, rendered in the header bar
 	sessionKey         string
